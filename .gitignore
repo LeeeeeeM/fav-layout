@@ -4,4 +4,6 @@ backend/tmp/
 backend/bin/
 frontend/node_modules/
 frontend/dist/
+.agents/
+skills-lock.json
 .DS_Store

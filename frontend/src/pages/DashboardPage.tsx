@@ -29,6 +29,9 @@ const LOCAL_LAYOUT_KEY = 'fav-layout.workspace';
 const DND_WIDGET_ID = 'application/x-fav-widget-id';
 
 function uid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
@@ -239,7 +242,7 @@ function findSplitLeaf(node: SplitNode, leafID: string): SplitLeaf | null {
   return findSplitLeaf(node.first, leafID) ?? findSplitLeaf(node.second, leafID);
 }
 
-/** 去掉指定叶子分区：用另一侧子树顶替；仅剩一块画布时变为空白叶子。叶子上的视频会先回收逻辑由调用方处理。 */
+/** 移除指定叶子分区：用另一侧子树顶替；仅剩一块画布时变为空白叶子。 */
 function collapseSplitAtLeaf(node: SplitNode, leafID: string): SplitNode {
   if (node.kind === 'leaf') {
     if (node.id === leafID) {
@@ -297,6 +300,7 @@ function readLocalWorkspace(): {
 function SplitNodeView({
   node,
   hoveredLeafID,
+  alwaysShowTools,
   onHoverLeaf,
   onLeaveLeaf,
   onSplitLeaf,
@@ -307,6 +311,7 @@ function SplitNodeView({
 }: {
   node: SplitNode;
   hoveredLeafID: string | null;
+  alwaysShowTools: boolean;
   onHoverLeaf: (leafID: string) => void;
   onLeaveLeaf: () => void;
   onSplitLeaf: (leafID: string, direction: SplitDirection) => void;
@@ -316,7 +321,7 @@ function SplitNodeView({
   onDividerPointerDown: (event: ReactPointerEvent<HTMLDivElement>, branchID: string, direction: SplitDirection) => void;
 }) {
   if (node.kind === 'leaf') {
-    const active = hoveredLeafID === node.id;
+    const active = alwaysShowTools || hoveredLeafID === node.id;
     return (
       <div
         className="split-leaf"
@@ -324,7 +329,7 @@ function SplitNodeView({
         onMouseLeave={onLeaveLeaf}
         onDragOver={(e) => {
           e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
+          e.dataTransfer.dropEffect = 'copy';
         }}
         onDrop={(e) => onDropToLeaf(node.id, e)}
       >
@@ -361,7 +366,7 @@ function SplitNodeView({
             onDragOver={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              e.dataTransfer.dropEffect = 'move';
+              e.dataTransfer.dropEffect = 'copy';
             }}
             onDrop={(e) => {
               e.stopPropagation();
@@ -375,7 +380,7 @@ function SplitNodeView({
               竖向分割
             </button>
             <button type="button" className="split-leaf-tools-merge" onClick={() => onCollapseSplitLeaf(node.id)}>
-              合并分区
+              移除分区
             </button>
           </div>
         ) : null}
@@ -399,6 +404,7 @@ function SplitNodeView({
         <SplitNodeView
           node={node.first}
           hoveredLeafID={hoveredLeafID}
+          alwaysShowTools={alwaysShowTools}
           onHoverLeaf={onHoverLeaf}
           onLeaveLeaf={onLeaveLeaf}
           onSplitLeaf={onSplitLeaf}
@@ -422,6 +428,7 @@ function SplitNodeView({
         <SplitNodeView
           node={node.second}
           hoveredLeafID={hoveredLeafID}
+          alwaysShowTools={alwaysShowTools}
           onHoverLeaf={onHoverLeaf}
           onLeaveLeaf={onLeaveLeaf}
           onSplitLeaf={onSplitLeaf}
@@ -445,11 +452,26 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   const [message, setMessage] = useState('');
   const [initialized, setInitialized] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
 
   const [hoveredLeafID, setHoveredLeafID] = useState<string | null>(null);
+  const [alwaysShowSplitTools, setAlwaysShowSplitTools] = useState(false);
 
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const libraryMetaRequested = useRef(new Set<string>());
+  const isResizingSplitRef = useRef(false);
+  const [saveNonce, setSaveNonce] = useState(0);
+  type FreeHistorySnapshot = { label: string; at: number; widgets: Widget[] };
+  type SplitHistorySnapshot = { label: string; at: number; splitRoot: SplitNode };
+
+  const freeCanvasOpSnapshotRef = useRef<FreeHistorySnapshot | null>(null);
+  const splitOpSnapshotRef = useRef<SplitHistorySnapshot | null>(null);
+
+  const [freePast, setFreePast] = useState<FreeHistorySnapshot[]>([]);
+  const [freeFuture, setFreeFuture] = useState<FreeHistorySnapshot[]>([]);
+  const [splitPast, setSplitPast] = useState<SplitHistorySnapshot[]>([]);
+  const [splitFuture, setSplitFuture] = useState<SplitHistorySnapshot[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
   const [freeCanvasWidth, setFreeCanvasWidth] = useState(() =>
     typeof window !== 'undefined' ? Math.min(window.innerWidth - 140, 1024) : 960,
   );
@@ -459,6 +481,19 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   const [loginPassword, setLoginPassword] = useState('admin123');
   const [loginError, setLoginError] = useState('');
   const [loginPending, setLoginPending] = useState(false);
+  const loginFirstInputRef = useRef<HTMLInputElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+  function closeLoginModal() {
+    setShowLogin(false);
+    setLoginPending(false);
+    setLoginError('');
+  }
+
+  function closeUserMenu() {
+    setUserMenuOpen(false);
+  }
 
   useEffect(() => {
     let canceled = false;
@@ -520,11 +555,157 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     };
   }, []);
 
+  useEffect(() => {
+    const mq = window.matchMedia?.('(hover: none), (pointer: coarse)');
+    if (!mq) {
+      return;
+    }
+    const sync = () => setAlwaysShowSplitTools(mq.matches);
+    sync();
+    mq.addEventListener?.('change', sync);
+    return () => {
+      mq.removeEventListener?.('change', sync);
+    };
+  }, []);
+
+  function captureFree(label: string): FreeHistorySnapshot {
+    return { label, at: Date.now(), widgets };
+  }
+
+  function captureSplit(label: string): SplitHistorySnapshot {
+    return { label, at: Date.now(), splitRoot };
+  }
+
+  function pushFree(label: string) {
+    setFreePast((prev) => {
+      const next = [...prev, captureFree(label)];
+      return next.length > 60 ? next.slice(next.length - 60) : next;
+    });
+    setFreeFuture([]);
+  }
+
+  function pushFreeSnapshot(snapshot: FreeHistorySnapshot) {
+    setFreePast((prev) => {
+      const next = [...prev, snapshot];
+      return next.length > 60 ? next.slice(next.length - 60) : next;
+    });
+    setFreeFuture([]);
+  }
+
+  function pushSplit(label: string) {
+    setSplitPast((prev) => {
+      const next = [...prev, captureSplit(label)];
+      return next.length > 60 ? next.slice(next.length - 60) : next;
+    });
+    setSplitFuture([]);
+  }
+
+  function pushSplitSnapshot(snapshot: SplitHistorySnapshot) {
+    setSplitPast((prev) => {
+      const next = [...prev, snapshot];
+      return next.length > 60 ? next.slice(next.length - 60) : next;
+    });
+    setSplitFuture([]);
+  }
+
+  function applyFree(snapshot: FreeHistorySnapshot) {
+    setWidgets(snapshot.widgets);
+    setMessage(`已回退：${snapshot.label}`);
+    setShowHistory(false);
+  }
+
+  function applySplit(snapshot: SplitHistorySnapshot) {
+    setSplitRoot(snapshot.splitRoot);
+    setMessage(`已回退：${snapshot.label}`);
+    setShowHistory(false);
+  }
+
+  function undo() {
+    if (mode === 'split') {
+      setSplitPast((prevPast) => {
+        if (prevPast.length === 0) return prevPast;
+        const snapshot = prevPast[prevPast.length - 1];
+        setSplitFuture((prevFuture) => [captureSplit('当前状态'), ...prevFuture].slice(0, 60));
+        applySplit(snapshot);
+        return prevPast.slice(0, -1);
+      });
+      return;
+    }
+
+    setFreePast((prevPast) => {
+      if (prevPast.length === 0) return prevPast;
+      const snapshot = prevPast[prevPast.length - 1];
+      setFreeFuture((prevFuture) => [captureFree('当前状态'), ...prevFuture].slice(0, 60));
+      applyFree(snapshot);
+      return prevPast.slice(0, -1);
+    });
+  }
+
+  function redo() {
+    if (mode === 'split') {
+      setSplitFuture((prevFuture) => {
+        if (prevFuture.length === 0) return prevFuture;
+        const [snapshot, ...rest] = prevFuture;
+        setSplitPast((prevPast) => [...prevPast, captureSplit('当前状态')].slice(-60));
+        applySplit(snapshot);
+        return rest;
+      });
+      return;
+    }
+
+    setFreeFuture((prevFuture) => {
+      if (prevFuture.length === 0) return prevFuture;
+      const [snapshot, ...rest] = prevFuture;
+      setFreePast((prevPast) => [...prevPast, captureFree('当前状态')].slice(-60));
+      applyFree(snapshot);
+      return rest;
+    });
+  }
+
+  useEffect(() => {
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isTyping =
+        tag === 'input' ||
+        tag === 'textarea' ||
+        (target instanceof HTMLElement && target.isContentEditable);
+
+      if (isTyping) {
+        return;
+      }
+
+      const isMod = e.metaKey || e.ctrlKey;
+      if (!isMod) {
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [widgets, splitRoot, mode]);
+
   const default169H = useMemo(() => defaultHeightFor169(freeCanvasWidth, DEFAULT_W), [freeCanvasWidth]);
 
   useEffect(() => {
     if (!initialized) {
       return;
+    }
+
+    // 清理已删除条目的请求标记，避免 Set 无限增长
+    const liveIDs = new Set(library.map((w) => w.id));
+    for (const id of libraryMetaRequested.current) {
+      if (!liveIDs.has(id)) {
+        libraryMetaRequested.current.delete(id);
+      }
     }
 
     for (const w of library) {
@@ -566,6 +747,10 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
       return;
     }
 
+    if (isResizingSplitRef.current) {
+      return;
+    }
+
     const timer = window.setTimeout(async () => {
       const payload = {
         items: widgets,
@@ -578,11 +763,10 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
       try {
         if (user) {
           await saveLayout(payload);
-          setMessage('配置已保存到后端');
         } else {
           window.localStorage.setItem(LOCAL_LAYOUT_KEY, JSON.stringify(payload));
-          setMessage('配置已保存到 localStorage');
         }
+        setSavedAt(Date.now());
       } catch {
         setMessage(user ? '配置保存失败' : 'localStorage 保存失败');
       } finally {
@@ -593,7 +777,58 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     return () => {
       window.clearTimeout(timer);
     };
-  }, [widgets, library, mode, splitRoot, initialized, user]);
+  }, [widgets, library, mode, splitRoot, initialized, user, saveNonce]);
+
+  useEffect(() => {
+    if (!showLogin) {
+      document.body.style.overflow = '';
+      return;
+    }
+    document.body.style.overflow = 'hidden';
+    window.setTimeout(() => loginFirstInputRef.current?.focus(), 0);
+
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeLoginModal();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = '';
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showLogin]);
+
+  useEffect(() => {
+    if (!userMenuOpen) {
+      return;
+    }
+
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeUserMenu();
+      }
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      const el = userMenuRef.current;
+      if (!el) {
+        return;
+      }
+      if (!el.contains(e.target as Node)) {
+        closeUserMenu();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('mousedown', onMouseDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [userMenuOpen]);
 
   const layout = useMemo<Layout[]>(
     () =>
@@ -661,7 +896,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   function onLibraryDragStart(event: ReactDragEvent<HTMLDivElement>, id: string) {
     event.dataTransfer.setData(DND_WIDGET_ID, id);
     event.dataTransfer.setData('text/plain', id);
-    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.effectAllowed = 'copy';
   }
 
   function onDropFromLibraryToFreeCanvas(_layout: Layout[], droppedItem: Layout, event: Event) {
@@ -678,14 +913,15 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
 
     const placed: Widget = {
       ...source,
+      id: uid(),
       x: clamp(droppedItem.x, 0, GRID_COLS),
       y: Math.max(0, droppedItem.y),
       w: DEFAULT_W,
       h: default169H,
     };
 
+    pushFree('拖入自由画布');
     setWidgets((prev) => [...prev, placed]);
-    setLibrary((prev) => prev.filter((item) => item.id !== draggedID));
     setMessage('已拖拽到自由画布');
   }
 
@@ -702,12 +938,20 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     }
 
     let assigned = false;
-    let replaced: Widget | undefined;
+    let replacedTitle: string | null = null;
+    const instance: Widget = {
+      ...source,
+      id: uid(),
+      x: 0,
+      y: 0,
+      w: DEFAULT_W,
+      h: default169H,
+    };
 
     setSplitRoot((prev) => {
-      const result = assignWidgetToLeaf(prev, leafID, source);
+      const result = assignWidgetToLeaf(prev, leafID, instance);
       assigned = result.assigned;
-      replaced = result.replaced;
+      replacedTitle = result.replaced?.title ?? null;
       return result.assigned ? result.next : prev;
     });
 
@@ -716,15 +960,12 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
       return;
     }
 
-    setLibrary((prev) => {
-      const next = prev.filter((item) => item.id !== draggedID);
-      return dedupeWidgetsById(replaced ? [replaced, ...next] : next);
-    });
-
-    setMessage('视频已放入分屏区域');
+    pushSplit(replacedTitle ? `替换分屏视频：${replacedTitle}` : '放入分屏区域');
+    setMessage(replacedTitle ? `已替换分屏区域视频：${replacedTitle}` : '视频已放入分屏区域');
   }
 
   function handleSplitLeaf(leafID: string, direction: SplitDirection) {
+    pushSplit(direction === 'col' ? '横向分割区域' : '竖向分割区域');
     setSplitRoot((prev) => splitLeaf(prev, leafID, direction));
     setMessage(direction === 'col' ? '已横向分割区域' : '已竖向分割区域');
   }
@@ -751,6 +992,9 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
 
     const rect = container.getBoundingClientRect();
     const startRatio = findBranchRatio(splitRoot, branchID) ?? 0.5;
+    if (!splitOpSnapshotRef.current) {
+      splitOpSnapshotRef.current = captureSplit('调整分割线比例');
+    }
 
     const startX = event.clientX;
     const startY = event.clientY;
@@ -765,6 +1009,15 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
         dividerEl.releasePointerCapture(pointerId);
       } catch {
         //
+      }
+      if (isResizingSplitRef.current) {
+        isResizingSplitRef.current = false;
+        setSaveNonce((v) => v + 1);
+      }
+      const snapshot = splitOpSnapshotRef.current;
+      splitOpSnapshotRef.current = null;
+      if (snapshot) {
+        pushSplitSnapshot(snapshot);
       }
     };
 
@@ -793,6 +1046,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     };
 
     document.body.style.userSelect = 'none';
+    isResizingSplitRef.current = true;
     dividerEl.addEventListener('pointermove', onMove);
     dividerEl.addEventListener('pointerup', end);
     dividerEl.addEventListener('pointercancel', end);
@@ -800,6 +1054,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   }
 
   function removeWidget(id: string) {
+    pushFree('移除自由画布视频');
     setWidgets((prev) => prev.filter((item) => item.id !== id));
   }
 
@@ -813,20 +1068,18 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
       return;
     }
 
+    pushSplit('移除分屏区域视频');
     setSplitRoot(result.next);
-    setLibrary((prev) => dedupeWidgetsById([result.removed as Widget, ...prev]));
-    setMessage('视频已移回右侧列表');
+    setMessage('已从分屏区域移除视频');
   }
 
   function handleCollapseSplitLeaf(leafID: string) {
     const leaf = findSplitLeaf(splitRoot, leafID);
     const widget = leaf?.widget;
     const next = collapseSplitAtLeaf(splitRoot, leafID);
+    pushSplit('移除分区');
     setSplitRoot(next);
-    if (widget) {
-      setLibrary((prev) => dedupeWidgetsById([widget, ...prev]));
-    }
-    setMessage(widget ? '已合并分区，该区域视频已移回右侧列表' : '已合并分区');
+    setMessage(widget ? '已移除分区（该区域视频已移除）' : '已移除分区');
   }
 
   async function handleLoginSubmit(event: FormEvent<HTMLFormElement>) {
@@ -835,7 +1088,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     setLoginPending(true);
     try {
       await onLogin(loginUsername, loginPassword);
-      setShowLogin(false);
+      closeLoginModal();
       setMessage('登录成功，已切换到后端保存');
     } catch (err) {
       setLoginError(err instanceof Error ? err.message : '登录失败');
@@ -848,47 +1101,123 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     <div className="dashboard-page">
       <header className="top-bar">
         <div>
-          <h2>摸鱼布局面板</h2>
-          <p>{user ? `当前用户：${user.username}` : '当前为游客模式（localStorage）'}</p>
+          <h2>自定义视频布局</h2>
         </div>
 
         <div className="auth-actions">
           {user ? (
-            <button onClick={() => void onLogout()}>退出登录</button>
+            <div className="user-menu" ref={userMenuRef}>
+              <button
+                type="button"
+                className="user-menu-trigger"
+                onClick={() => setUserMenuOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={userMenuOpen}
+              >
+                <span className="user-menu-name">{user.username}</span>
+                <span className="user-menu-caret" aria-hidden="true">
+                  ▾
+                </span>
+              </button>
+
+              {userMenuOpen ? (
+                <div className="user-menu-popover" role="menu" aria-label="用户菜单">
+                  <button
+                    type="button"
+                    className="user-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      closeUserMenu();
+                      setMessage('个人资料页：待实现');
+                    }}
+                  >
+                    个人资料
+                  </button>
+                  <button
+                    type="button"
+                    className="user-menu-item danger"
+                    role="menuitem"
+                    onClick={() => {
+                      closeUserMenu();
+                      void onLogout();
+                    }}
+                  >
+                    退出登录
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : (
             <>
-              <button onClick={() => setShowLogin((v) => !v)}>{showLogin ? '关闭登录' : '登录'}</button>
-              {showLogin ? (
-                <form className="login-popover" onSubmit={handleLoginSubmit}>
-                  <label htmlFor="login-username">用户名</label>
-                  <input
-                    id="login-username"
-                    value={loginUsername}
-                    onChange={(e) => setLoginUsername(e.target.value)}
-                    autoComplete="username"
-                    required
-                  />
-
-                  <label htmlFor="login-password">密码</label>
-                  <input
-                    id="login-password"
-                    type="password"
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    autoComplete="current-password"
-                    required
-                  />
-
-                  {loginError ? <div className="error-text">{loginError}</div> : null}
-                  <button type="submit" disabled={loginPending}>
-                    {loginPending ? '登录中...' : '确认登录'}
-                  </button>
-                </form>
-              ) : null}
+              <div className="auth-guest-row">
+                <button onClick={() => setShowLogin(true)}>登录</button>
+                <button
+                  type="button"
+                  className="guest-info"
+                  aria-label="游客模式信息"
+                  data-tooltip="当前为游客模式（localStorage）"
+                >
+                  i
+                </button>
+              </div>
             </>
           )}
         </div>
       </header>
+
+      {showLogin ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              closeLoginModal();
+            }
+          }}
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="登录"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="modal-title">登录</div>
+              <button type="button" className="modal-close" onClick={closeLoginModal} aria-label="关闭">
+                ×
+              </button>
+            </div>
+
+            <form className="modal-body" onSubmit={handleLoginSubmit}>
+              <label htmlFor="login-username">用户名</label>
+              <input
+                ref={loginFirstInputRef}
+                id="login-username"
+                value={loginUsername}
+                onChange={(e) => setLoginUsername(e.target.value)}
+                autoComplete="username"
+                required
+              />
+
+              <label htmlFor="login-password">密码</label>
+              <input
+                id="login-password"
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+
+              {loginError ? <div className="error-text">{loginError}</div> : null}
+              <button type="submit" disabled={loginPending}>
+                {loginPending ? '登录中...' : '确认登录'}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : null}
 
       <div className="workspace-mode-row">
         <button className={mode === 'free' ? 'active' : ''} onClick={() => setMode('free')}>
@@ -914,6 +1243,30 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                 onDropDragOver={() => ({ w: DEFAULT_W, h: default169H })}
                 onDrop={onDropFromLibraryToFreeCanvas}
                 onLayoutChange={onLayoutChange}
+                onDragStart={() => {
+                  if (!freeCanvasOpSnapshotRef.current) {
+                    freeCanvasOpSnapshotRef.current = captureFree('移动自由画布条目');
+                  }
+                }}
+                onDragStop={() => {
+                  const snapshot = freeCanvasOpSnapshotRef.current;
+                  freeCanvasOpSnapshotRef.current = null;
+                  if (snapshot) {
+                    pushFreeSnapshot(snapshot);
+                  }
+                }}
+                onResizeStart={() => {
+                  if (!freeCanvasOpSnapshotRef.current) {
+                    freeCanvasOpSnapshotRef.current = captureFree('调整自由画布大小');
+                  }
+                }}
+                onResizeStop={() => {
+                  const snapshot = freeCanvasOpSnapshotRef.current;
+                  freeCanvasOpSnapshotRef.current = null;
+                  if (snapshot) {
+                    pushFreeSnapshot(snapshot);
+                  }
+                }}
                 draggableHandle=".video-card-header"
                 draggableCancel="button"
               >
@@ -940,6 +1293,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                 <SplitNodeView
                   node={splitRoot}
                   hoveredLeafID={hoveredLeafID}
+                  alwaysShowTools={alwaysShowSplitTools}
                   onHoverLeaf={setHoveredLeafID}
                   onLeaveLeaf={() => setHoveredLeafID(null)}
                   onSplitLeaf={handleSplitLeaf}
@@ -1020,10 +1374,83 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
           {message ||
             (mode === 'free'
               ? '自由模式：右侧拖到任意网格位置'
-              : '分屏模式：悬浮区域可调分割线与合并分区；标题栏移除视频或合并整块分区')}
+              : '分屏模式：悬浮区域可调分割线与移除分区；标题栏移除视频或移除整块分区')}
+          <button
+            type="button"
+            className="hint-undo"
+            disabled={mode === 'split' ? splitPast.length === 0 : freePast.length === 0}
+            onClick={undo}
+          >
+            撤销
+          </button>
+          <button
+            type="button"
+            className="hint-undo"
+            disabled={mode === 'split' ? splitFuture.length === 0 : freeFuture.length === 0}
+            onClick={redo}
+          >
+            重做
+          </button>
+          <button
+            type="button"
+            className="hint-undo"
+            disabled={mode === 'split' ? splitPast.length === 0 && splitFuture.length === 0 : freePast.length === 0 && freeFuture.length === 0}
+            onClick={() => setShowHistory((v) => !v)}
+          >
+            历史
+          </button>
         </span>
-        <span>{saving ? '保存中...' : ''}</span>
+        <span>{saving ? '保存中...' : savedAt && Date.now() - savedAt < 1500 ? '已保存' : ''}</span>
       </div>
+
+      {showHistory ? (
+        <div className="history-popover" role="dialog" aria-label="操作历史">
+          <div className="history-title">操作历史</div>
+          <div className="history-list">
+            {(mode === 'split' ? [...splitPast].reverse() : [...freePast].reverse()).map((h, idx) => (
+              <button
+                key={`${h.at}-${idx}`}
+                type="button"
+                className="history-item"
+                onClick={() => {
+                  if (mode === 'split') {
+                    const past = [...splitPast];
+                    const reverseIndex = splitPast.length - 1 - idx;
+                    const target = past[reverseIndex];
+                    const toFuture = past.slice(reverseIndex + 1).reverse();
+                    const remainPast = past.slice(0, reverseIndex);
+
+                    setSplitPast(remainPast);
+                    setSplitFuture((prev) => [...toFuture, ...prev].slice(0, 60));
+                    applySplit(target);
+                    return;
+                  }
+
+                  const past = [...freePast];
+                  const reverseIndex = freePast.length - 1 - idx;
+                  const target = past[reverseIndex];
+                  const toFuture = past.slice(reverseIndex + 1).reverse();
+                  const remainPast = past.slice(0, reverseIndex);
+
+                  setFreePast(remainPast);
+                  setFreeFuture((prev) => [...toFuture, ...prev].slice(0, 60));
+                  applyFree(target);
+                }}
+              >
+                <span className="history-item-label">{h.label}</span>
+                <span className="history-item-time">{new Date(h.at).toLocaleTimeString()}</span>
+              </button>
+            ))}
+            {mode === 'split'
+              ? splitPast.length === 0
+                ? <div className="history-empty">暂无历史</div>
+                : null
+              : freePast.length === 0
+                ? <div className="history-empty">暂无历史</div>
+                : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
