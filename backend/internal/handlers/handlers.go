@@ -31,6 +31,8 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+const maxJSONBodyBytes = 16 << 20
+
 func New(repo *repository.Repository, cfg config.Config) *Handler {
 	return &Handler{
 		repo:       repo,
@@ -135,7 +137,7 @@ func (h *Handler) bilibiliView(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -287,7 +289,7 @@ func (h *Handler) saveLayout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var layout models.Layout
-	if err := json.NewDecoder(r.Body).Decode(&layout); err != nil {
+	if err := decodeJSONBody(w, r, &layout); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -313,7 +315,7 @@ func (h *Handler) saveLibrary(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Items []models.Widget `json:"items"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -357,4 +359,17 @@ func jsonResponse(w http.ResponseWriter, status int, payload any) {
 
 func jsonError(w http.ResponseWriter, status int, message string) {
 	jsonResponse(w, status, map[string]string{"error": message})
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return err
+	}
+	return nil
 }

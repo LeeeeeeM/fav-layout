@@ -16,6 +16,7 @@
       "@/*": ["./src/*"]
     },
     "strict": true,
+    "types": ["vitest/globals"],
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true

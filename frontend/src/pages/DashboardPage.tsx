@@ -12,6 +12,7 @@ import {
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout';
 import { getLayout, getLibraryPage, saveLayout, saveLibrary } from '../api';
 import type { SplitBranch, SplitDirection, SplitLeaf, SplitNode, User, Widget, WorkspaceMode } from '../types';
+import { dedupeWidgetsById, loadAllLibraryPages, nextVisibleLibrary } from './dashboard/library-paging';
 import { fetchBilibiliMeta, normalizeCoverPic, toBilibiliEmbed } from '../utils/bilibili';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -56,20 +57,6 @@ function uid(): string {
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
-}
-
-/** 同一视频可能出现两条相同 id（持久化重复、极端竞态）；列表渲染按 id 去重，保留先出现的条目。 */
-function dedupeWidgetsById(items: Widget[]): Widget[] {
-  const seen = new Set<string>();
-  const out: Widget[] = [];
-  for (const w of items) {
-    if (seen.has(w.id)) {
-      continue;
-    }
-    seen.add(w.id);
-    out.push(w);
-  }
-  return out;
 }
 
 /** 按当前画布宽度把网格里的列宽换算成像素，使默认卡片接近 16:9（宽/高）。 */
@@ -502,7 +489,12 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   const [libraryHasMore, setLibraryHasMore] = useState(false);
   const [splitRoot, setSplitRoot] = useState<SplitNode>(defaultSplitRoot());
 
-  const setMessage = (_value: string) => {};
+  const setMessage = (value: string) => {
+    if (!value) {
+      return;
+    }
+    toast(value);
+  };
   const setErrorMessage = (value: string) => toast.error(value);
   const [initialized, setInitialized] = useState(false);
 
@@ -598,16 +590,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   }
 
   async function loadRemoteLibraryAll(): Promise<Widget[]> {
-    const all: Widget[] = [];
-    let offset = 0;
-    let hasMore = true;
-    while (hasMore) {
-      const page = await getLibraryPage({ offset, limit: 50 });
-      all.push(...page.items);
-      offset = page.offset + page.items.length;
-      hasMore = page.hasMore && page.items.length > 0;
-    }
-    return dedupeWidgetsById(all);
+    return loadAllLibraryPages(({ offset, limit }) => getLibraryPage({ offset, limit }), { limit: 50 });
   }
 
   function syncVisibleLibraryFromLocal(items: Widget[]) {
@@ -1358,9 +1341,9 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     const el = event.currentTarget;
     const remaining = el.scrollHeight - (el.scrollTop + el.clientHeight);
     if (remaining <= 120) {
-      const nextCount = Math.min(library.length, libraryVisible.length + LIBRARY_PAGE_SIZE);
-      setLibraryVisible(library.slice(0, nextCount));
-      setLibraryHasMore(nextCount < library.length);
+      const next = nextVisibleLibrary(library, libraryVisible.length, LIBRARY_PAGE_SIZE);
+      setLibraryVisible(next.visible);
+      setLibraryHasMore(next.hasMore);
     }
   }
 
