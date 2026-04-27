@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: fav-layout-postgres
+    environment:
+      POSTGRES_USER: fav
+      POSTGRES_PASSWORD: fav
+      POSTGRES_DB: fav_layout
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fav -d fav_layout"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_data:
