@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
 import { login, logout, me } from './api';
+import { Toaster } from './components/ui/sonner';
 import DashboardPage from './pages/DashboardPage';
+import { useWorkspaceStore } from './stores/workspace-store';
 import type { User } from './types';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const isDark = useWorkspaceStore((s) => s.isDark);
 
   useEffect(() => {
     let canceled = false;
@@ -39,5 +42,10 @@ export default function App() {
     setUser(null);
   }
 
-  return <DashboardPage user={user} onLogin={handleLogin} onLogout={handleLogout} />;
+  return (
+    <>
+      <DashboardPage user={user} onLogin={handleLogin} onLogout={handleLogout} />
+      <Toaster position="top-center" richColors closeButton theme={isDark ? 'dark' : 'light'} />
+    </>
+  );
 }

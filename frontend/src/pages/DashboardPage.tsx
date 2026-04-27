@@ -2,6 +2,7 @@ import {
   DragEvent as ReactDragEvent,
   FormEvent,
   KeyboardEvent,
+  UIEvent,
   PointerEvent as ReactPointerEvent,
   useEffect,
   useMemo,
@@ -9,15 +10,31 @@ import {
   useState,
 } from 'react';
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout';
-import { getLayout, saveLayout } from '../api';
+import { getLayout, getLibraryPage, saveLayout, saveLibrary } from '../api';
 import type { SplitBranch, SplitDirection, SplitLeaf, SplitNode, User, Widget, WorkspaceMode } from '../types';
 import { fetchBilibiliMeta, normalizeCoverPic, toBilibiliEmbed } from '../utils/bilibili';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { toast } from 'sonner';
+import { Eye, EyeOff, Info, Moon, Sun, X } from '@/lib/icons';
+import { useWorkspaceStore } from '@/stores/workspace-store';
 
 type DashboardPageProps = {
   user: User | null;
   onLogin: (username: string, password: string) => Promise<void>;
   onLogout: () => Promise<void>;
 };
+
+type RemoveTarget = {
+  scope: 'library' | 'free' | 'split';
+  id: string;
+  title: string;
+};
+
+type SaveStatus = 'idle' | 'saved' | 'error';
 
 const AutoGridLayout = WidthProvider(GridLayout);
 
@@ -27,6 +44,8 @@ const DEFAULT_W = 8;
 const ASPECT_16_9 = 16 / 9;
 const LOCAL_LAYOUT_KEY = 'fav-layout.workspace';
 const DND_WIDGET_ID = 'application/x-fav-widget-id';
+const LOCAL_LIBRARY_LIMIT = 20;
+const LIBRARY_PAGE_SIZE = 10;
 
 function uid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -297,6 +316,33 @@ function readLocalWorkspace(): {
   }
 }
 
+function EmbeddedVideo({ src, title }: { src: string; title: string }) {
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    setLoaded(false);
+  }, [src]);
+
+  return (
+    <div className="video-embed-wrap">
+      {!loaded ? (
+        <div className="video-embed-loading" role="status" aria-live="polite" aria-label={`正在加载：${title}`}>
+          <div className="video-embed-spinner" />
+          <span>加载中...</span>
+        </div>
+      ) : null}
+      <iframe
+        src={src}
+        title={title}
+        allowFullScreen
+        loading="lazy"
+        referrerPolicy="strict-origin-when-cross-origin"
+        onLoad={() => setLoaded(true)}
+      />
+    </div>
+  );
+}
+
 function SplitNodeView({
   node,
   hoveredLeafID,
@@ -316,7 +362,7 @@ function SplitNodeView({
   onLeaveLeaf: () => void;
   onSplitLeaf: (leafID: string, direction: SplitDirection) => void;
   onDropToLeaf: (leafID: string, event: ReactDragEvent<HTMLDivElement>) => void;
-  onRemoveLeafWidget: (leafID: string) => void;
+  onRemoveLeafWidget: (leafID: string, title: string) => void;
   onCollapseSplitLeaf: (leafID: string) => void;
   onDividerPointerDown: (event: ReactPointerEvent<HTMLDivElement>, branchID: string, direction: SplitDirection) => void;
 }) {
@@ -337,24 +383,21 @@ function SplitNodeView({
           <div className="split-widget-card">
             <div className="split-widget-header">
               <span>{node.widget.title}</span>
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon"
+                className="size-[22px] rounded-md p-0 text-slate-300 hover:bg-transparent hover:text-slate-50"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onRemoveLeafWidget(node.id);
+                  onRemoveLeafWidget(node.id, node.widget!.title);
                 }}
                 aria-label="移除区域视频"
               >
                 ×
-              </button>
+              </Button>
             </div>
-            <iframe
-              src={node.widget.embedUrl}
-              title={node.widget.title}
-              allowFullScreen
-              loading="lazy"
-              referrerPolicy="strict-origin-when-cross-origin"
-            />
+            <EmbeddedVideo src={node.widget.embedUrl} title={node.widget.title} />
           </div>
         ) : (
           <div className="split-leaf-empty">拖拽右侧视频到此区域</div>
@@ -373,15 +416,15 @@ function SplitNodeView({
               onDropToLeaf(node.id, e);
             }}
           >
-            <button type="button" onClick={() => onSplitLeaf(node.id, 'col')}>
+            <Button type="button" size="sm" onClick={() => onSplitLeaf(node.id, 'col')}>
               横向分割
-            </button>
-            <button type="button" onClick={() => onSplitLeaf(node.id, 'row')}>
+            </Button>
+            <Button type="button" size="sm" onClick={() => onSplitLeaf(node.id, 'row')}>
               竖向分割
-            </button>
-            <button type="button" className="split-leaf-tools-merge" onClick={() => onCollapseSplitLeaf(node.id)}>
+            </Button>
+            <Button type="button" size="sm" variant="destructive" onClick={() => onCollapseSplitLeaf(node.id)}>
               移除分区
-            </button>
+            </Button>
           </div>
         ) : null}
       </div>
@@ -443,21 +486,33 @@ function SplitNodeView({
 }
 
 export default function DashboardPage({ user, onLogin, onLogout }: DashboardPageProps) {
+  const mode = useWorkspaceStore((s) => s.mode);
+  const setMode = useWorkspaceStore((s) => s.setMode);
+  const isDark = useWorkspaceStore((s) => s.isDark);
+  const setIsDark = useWorkspaceStore((s) => s.setIsDark);
+  const showHistory = useWorkspaceStore((s) => s.showHistory);
+  const setShowHistory = useWorkspaceStore((s) => s.setShowHistory);
+  const libraryCollapsed = useWorkspaceStore((s) => s.libraryCollapsed);
+  const toggleLibraryCollapsed = useWorkspaceStore((s) => s.toggleLibraryCollapsed);
+
   const [urlInput, setUrlInput] = useState('');
   const [widgets, setWidgets] = useState<Widget[]>([]);
   const [library, setLibrary] = useState<Widget[]>([]);
-  const [mode, setMode] = useState<WorkspaceMode>('free');
+  const [libraryVisible, setLibraryVisible] = useState<Widget[]>([]);
+  const [libraryHasMore, setLibraryHasMore] = useState(false);
   const [splitRoot, setSplitRoot] = useState<SplitNode>(defaultSplitRoot());
 
-  const [message, setMessage] = useState('');
+  const setMessage = (_value: string) => {};
+  const setErrorMessage = (value: string) => toast.error(value);
   const [initialized, setInitialized] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
 
   const [hoveredLeafID, setHoveredLeafID] = useState<string | null>(null);
   const [alwaysShowSplitTools, setAlwaysShowSplitTools] = useState(false);
 
   const canvasWrapRef = useRef<HTMLDivElement>(null);
+  const dashboardPageRef = useRef<HTMLDivElement>(null);
+  const topBarRef = useRef<HTMLElement>(null);
+  const libraryListRef = useRef<HTMLDivElement>(null);
   const libraryMetaRequested = useRef(new Set<string>());
   const isResizingSplitRef = useRef(false);
   const [saveNonce, setSaveNonce] = useState(0);
@@ -471,12 +526,14 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   const [freeFuture, setFreeFuture] = useState<FreeHistorySnapshot[]>([]);
   const [splitPast, setSplitPast] = useState<SplitHistorySnapshot[]>([]);
   const [splitFuture, setSplitFuture] = useState<SplitHistorySnapshot[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
   const [freeCanvasWidth, setFreeCanvasWidth] = useState(() =>
     typeof window !== 'undefined' ? Math.min(window.innerWidth - 140, 1024) : 960,
   );
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const pendingSaveCountRef = useRef(0);
 
   const [showLogin, setShowLogin] = useState(false);
+  const [pendingRemoveTarget, setPendingRemoveTarget] = useState<RemoveTarget | null>(null);
   const [loginUsername, setLoginUsername] = useState('admin');
   const [loginPassword, setLoginPassword] = useState('admin123');
   const [loginError, setLoginError] = useState('');
@@ -491,9 +548,107 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     setLoginError('');
   }
 
+  function closeRemoveConfirmModal() {
+    setPendingRemoveTarget(null);
+  }
+
+  function requestRemoveLibraryItem(item: Widget) {
+    setPendingRemoveTarget({
+      scope: 'library',
+      id: item.id,
+      title: item.title,
+    });
+  }
+
+  function requestRemoveFreeWidget(item: Widget) {
+    setPendingRemoveTarget({
+      scope: 'free',
+      id: item.id,
+      title: item.title,
+    });
+  }
+
+  function requestRemoveSplitLeafWidget(leafID: string, title: string) {
+    setPendingRemoveTarget({
+      scope: 'split',
+      id: leafID,
+      title,
+    });
+  }
+
   function closeUserMenu() {
     setUserMenuOpen(false);
   }
+
+  function beginSave() {
+    pendingSaveCountRef.current += 1;
+    setSaveStatus('idle');
+  }
+
+  function finishSaveSuccess() {
+    pendingSaveCountRef.current = Math.max(0, pendingSaveCountRef.current - 1);
+    if (pendingSaveCountRef.current === 0) {
+      setSaveStatus('saved');
+    }
+  }
+
+  function finishSaveError() {
+    pendingSaveCountRef.current = Math.max(0, pendingSaveCountRef.current - 1);
+    setSaveStatus('error');
+  }
+
+  async function loadRemoteLibraryAll(): Promise<Widget[]> {
+    const all: Widget[] = [];
+    let offset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const page = await getLibraryPage({ offset, limit: 50 });
+      all.push(...page.items);
+      offset = page.offset + page.items.length;
+      hasMore = page.hasMore && page.items.length > 0;
+    }
+    return dedupeWidgetsById(all);
+  }
+
+  function syncVisibleLibraryFromLocal(items: Widget[]) {
+    const next = dedupeWidgetsById(items).slice(0, LOCAL_LIBRARY_LIMIT);
+    setLibraryVisible(next);
+    setLibraryHasMore(false);
+  }
+
+  function syncVisibleLibraryFromRemote(items: Widget[]) {
+    const next = dedupeWidgetsById(items);
+    const firstPage = next.slice(0, LIBRARY_PAGE_SIZE);
+    setLibrary(next);
+    setLibraryVisible(firstPage);
+    setLibraryHasMore(firstPage.length < next.length);
+  }
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle('dark', isDark);
+    window.localStorage.setItem('fav-layout.theme', isDark ? 'dark' : 'light');
+  }, [isDark]);
+
+  useEffect(() => {
+    const pageEl = dashboardPageRef.current;
+    const headerEl = topBarRef.current;
+    if (!pageEl || !headerEl) {
+      return;
+    }
+
+    const syncTopBarHeight = () => {
+      pageEl.style.setProperty('--topbar-height', `${headerEl.offsetHeight}px`);
+    };
+
+    const ro = new ResizeObserver(syncTopBarHeight);
+    ro.observe(headerEl);
+    syncTopBarHeight();
+
+    return () => {
+      ro.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     let canceled = false;
@@ -505,10 +660,11 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
         const localState = readLocalWorkspace();
         if (!canceled) {
           setWidgets(dedupeWidgetsById(localState.items));
-          setLibrary(dedupeWidgetsById(localState.library));
+          const localLibrary = dedupeWidgetsById(localState.library).slice(0, LOCAL_LIBRARY_LIMIT);
+          setLibrary(localLibrary);
+          syncVisibleLibraryFromLocal(localLibrary);
           setMode(localState.mode);
           setSplitRoot(localState.splitRoot);
-          setMessage('未登录：配置保存在 localStorage');
           setInitialized(true);
         }
         return;
@@ -518,14 +674,20 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
         const data = await getLayout();
         if (!canceled) {
           setWidgets(dedupeWidgetsById(data.items ?? []));
-          setLibrary(dedupeWidgetsById(data.library ?? []));
+          setLibrary([]);
+          setLibraryVisible([]);
+          setLibraryHasMore(false);
           setMode(data.mode === 'split' ? 'split' : 'free');
           setSplitRoot(readSplitNode(data.splitRoot));
-          setMessage('已登录：配置保存在后端');
+          const remoteLibrary = await loadRemoteLibraryAll();
+          if (canceled) {
+            return;
+          }
+          syncVisibleLibraryFromRemote(remoteLibrary);
         }
       } catch {
         if (!canceled) {
-          setMessage('加载布局失败');
+          setErrorMessage('加载布局失败');
         }
       } finally {
         if (!canceled) {
@@ -539,6 +701,20 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
       canceled = true;
     };
   }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      return;
+    }
+    syncVisibleLibraryFromLocal(library);
+  }, [user, library]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+    setLibraryHasMore(libraryVisible.length < library.length);
+  }, [user, libraryVisible.length, library.length]);
 
   useEffect(() => {
     const el = canvasWrapRef.current;
@@ -726,18 +902,17 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
         }
 
         const pic = normalizeCoverPic(meta.pic);
-        setLibrary((prev) =>
-          prev.map((item) =>
-            item.id !== w.id
-              ? item
-              : {
-                  ...item,
-                  title: meta.title ? meta.title : item.title,
-                  coverUrl: pic,
-                  upName: meta.upName ?? item.upName,
-                },
-          ),
-        );
+        const applyMeta = (item: Widget) =>
+          item.id !== w.id
+            ? item
+            : {
+                ...item,
+                title: meta.title ? meta.title : item.title,
+                coverUrl: pic,
+                upName: meta.upName ?? item.upName,
+              };
+        setLibrary((prev) => prev.map(applyMeta));
+        setLibraryVisible((prev) => prev.map(applyMeta));
       })();
     }
   }, [initialized, library]);
@@ -752,44 +927,101 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     }
 
     const timer = window.setTimeout(async () => {
+      beginSave();
       const payload = {
         items: widgets,
-        library,
         mode,
         splitRoot,
       };
 
-      setSaving(true);
       try {
         if (user) {
           await saveLayout(payload);
         } else {
-          window.localStorage.setItem(LOCAL_LAYOUT_KEY, JSON.stringify(payload));
+          window.localStorage.setItem(
+            LOCAL_LAYOUT_KEY,
+            JSON.stringify({
+              ...payload,
+              library,
+            }),
+          );
         }
-        setSavedAt(Date.now());
+        finishSaveSuccess();
       } catch {
-        setMessage(user ? '配置保存失败' : 'localStorage 保存失败');
-      } finally {
-        setSaving(false);
+        finishSaveError();
+        setErrorMessage(user ? '配置保存失败' : 'localStorage 保存失败');
       }
     }, 500);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [widgets, library, mode, splitRoot, initialized, user, saveNonce]);
+  }, [widgets, mode, splitRoot, initialized, user, saveNonce]);
 
   useEffect(() => {
-    if (!showLogin) {
+    if (!initialized) {
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      beginSave();
+      try {
+        if (user) {
+          await saveLibrary(library);
+        } else {
+          window.localStorage.setItem(
+            LOCAL_LAYOUT_KEY,
+            JSON.stringify({
+              items: widgets,
+              library,
+              mode,
+              splitRoot,
+            }),
+          );
+        }
+        finishSaveSuccess();
+      } catch {
+        finishSaveError();
+        setErrorMessage(user ? '视频库保存失败' : 'localStorage 保存失败');
+      }
+    }, 500);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [library, initialized, user]);
+
+  useEffect(() => {
+    if (saveStatus !== 'saved') {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSaveStatus((prev) => (prev === 'saved' ? 'idle' : prev));
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [saveStatus]);
+
+  useEffect(() => {
+    const showModal = showLogin || Boolean(pendingRemoveTarget);
+    if (!showModal) {
       document.body.style.overflow = '';
       return;
     }
     document.body.style.overflow = 'hidden';
-    window.setTimeout(() => loginFirstInputRef.current?.focus(), 0);
+    if (showLogin) {
+      window.setTimeout(() => loginFirstInputRef.current?.focus(), 0);
+    }
 
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
+      if (e.key !== 'Escape') {
+        return;
+      }
+      e.preventDefault();
+      if (pendingRemoveTarget) {
+        closeRemoveConfirmModal();
+        return;
+      }
+      if (showLogin) {
         closeLoginModal();
       }
     };
@@ -798,7 +1030,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
       document.body.style.overflow = '';
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [showLogin]);
+  }, [showLogin, pendingRemoveTarget]);
 
   useEffect(() => {
     if (!userMenuOpen) {
@@ -845,26 +1077,66 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   );
 
   function addToLibrary() {
-    const parsed = toBilibiliEmbed(urlInput);
-    if (!parsed) {
-      setMessage('链接不合法，支持 BV/av 形式的 B 站视频链接');
+    const raw = urlInput.trim();
+    if (!raw) {
+      setErrorMessage('请输入视频链接');
       return;
     }
 
-    const next: Widget = {
-      id: uid(),
-      title: parsed.title,
-      inputUrl: urlInput.trim(),
-      embedUrl: parsed.embedUrl,
-      x: 0,
-      y: 0,
-      w: DEFAULT_W,
-      h: default169H,
-    };
+    if (!/^https?:\/\//i.test(raw)) {
+      setErrorMessage('链接格式不正确，请使用 http:// 或 https:// 开头');
+      return;
+    }
 
-    setLibrary((prev) => dedupeWidgetsById([next, ...prev]));
-    setUrlInput('');
-    setMessage('已加入右侧列表，拖到左侧区域');
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(raw);
+    } catch {
+      setErrorMessage('链接格式不正确，请粘贴完整视频链接');
+      return;
+    }
+
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      setErrorMessage('仅支持 http/https 链接');
+      return;
+    }
+
+    if (!user && library.length >= LOCAL_LIBRARY_LIMIT) {
+      toast.error(`本地模式最多 ${LOCAL_LIBRARY_LIMIT} 条视频`);
+      return;
+    }
+
+    const parsed = toBilibiliEmbed(raw);
+    if (!parsed) {
+      setErrorMessage('链接不合法，支持 BV/av 形式的 B 站视频链接');
+      return;
+    }
+
+    try {
+      const next: Widget = {
+        id: uid(),
+        title: parsed.title,
+        inputUrl: raw,
+        embedUrl: parsed.embedUrl,
+        x: 0,
+        y: 0,
+        w: DEFAULT_W,
+        h: default169H,
+      };
+
+      setLibrary((prev) => {
+        const merged = dedupeWidgetsById([next, ...prev]);
+        return user ? merged : merged.slice(0, LOCAL_LIBRARY_LIMIT);
+      });
+      setLibraryVisible((prev) => {
+        const merged = dedupeWidgetsById([next, ...prev]);
+        return user ? merged : merged.slice(0, LOCAL_LIBRARY_LIMIT);
+      });
+      setUrlInput('');
+      toast.success('已加入右侧列表，拖到左侧区域');
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? `添加失败：${err.message}` : '添加失败，请稍后重试');
+    }
   }
 
   function onInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -1060,6 +1332,36 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
 
   function removeLibraryItem(id: string) {
     setLibrary((prev) => prev.filter((item) => item.id !== id));
+    setLibraryVisible((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  function confirmRemoveTarget() {
+    if (!pendingRemoveTarget) {
+      return;
+    }
+    if (pendingRemoveTarget.scope === 'library') {
+      removeLibraryItem(pendingRemoveTarget.id);
+      setMessage('已从视频库移除');
+    } else if (pendingRemoveTarget.scope === 'free') {
+      removeWidget(pendingRemoveTarget.id);
+      setMessage('已从画布移除视频');
+    } else {
+      removeSplitLeafWidget(pendingRemoveTarget.id);
+    }
+    setPendingRemoveTarget(null);
+  }
+
+  function handleLibraryListScroll(event: UIEvent<HTMLDivElement>) {
+    if (!user || !libraryHasMore || libraryCollapsed) {
+      return;
+    }
+    const el = event.currentTarget;
+    const remaining = el.scrollHeight - (el.scrollTop + el.clientHeight);
+    if (remaining <= 120) {
+      const nextCount = Math.min(library.length, libraryVisible.length + LIBRARY_PAGE_SIZE);
+      setLibraryVisible(library.slice(0, nextCount));
+      setLibraryHasMore(nextCount < library.length);
+    }
   }
 
   function removeSplitLeafWidget(leafID: string) {
@@ -1097,18 +1399,49 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     }
   }
 
+  const canAddLibrary = user ? true : library.length < LOCAL_LIBRARY_LIMIT;
+  const visibleLibrary = libraryVisible;
+  const saveStatusText = saveStatus === 'saved' ? '已保存' : saveStatus === 'error' ? '保存失败' : '';
+
   return (
-    <div className="dashboard-page">
-      <header className="top-bar">
+    <div className="dashboard-page" ref={dashboardPageRef}>
+      <header className="top-bar" ref={topBarRef}>
         <div>
           <h2>自定义视频布局</h2>
         </div>
 
         <div className="auth-actions">
+          <ToggleGroup
+            type="single"
+            value={mode}
+            size="sm"
+            className="mode-toggle"
+            onValueChange={(next) => {
+              if (!next || (next !== 'free' && next !== 'split')) {
+                return;
+              }
+              setMode(next);
+            }}
+          >
+            <ToggleGroupItem value="free" aria-label="自由模式">
+              自由模式
+            </ToggleGroupItem>
+            <ToggleGroupItem value="split" aria-label="分屏模式">
+              分屏模式
+            </ToggleGroupItem>
+          </ToggleGroup>
+
+          <div className="theme-switch-row">
+            <Sun className="theme-switch-icon" aria-hidden="true" />
+            <Switch checked={isDark} onCheckedChange={setIsDark} aria-label="切换日间/夜间主题" />
+            <Moon className="theme-switch-icon" aria-hidden="true" />
+          </div>
           {user ? (
             <div className="user-menu" ref={userMenuRef}>
-              <button
+              <Button
                 type="button"
+                variant="secondary"
+                size="sm"
                 className="user-menu-trigger"
                 onClick={() => setUserMenuOpen((v) => !v)}
                 aria-haspopup="menu"
@@ -1118,12 +1451,14 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                 <span className="user-menu-caret" aria-hidden="true">
                   ▾
                 </span>
-              </button>
+              </Button>
 
               {userMenuOpen ? (
                 <div className="user-menu-popover" role="menu" aria-label="用户菜单">
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     className="user-menu-item"
                     role="menuitem"
                     onClick={() => {
@@ -1132,9 +1467,11 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                     }}
                   >
                     个人资料
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     className="user-menu-item danger"
                     role="menuitem"
                     onClick={() => {
@@ -1143,22 +1480,28 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                     }}
                   >
                     退出登录
-                  </button>
+                  </Button>
                 </div>
               ) : null}
             </div>
           ) : (
             <>
               <div className="auth-guest-row">
-                <button onClick={() => setShowLogin(true)}>登录</button>
-                <button
-                  type="button"
-                  className="guest-info"
-                  aria-label="游客模式信息"
-                  data-tooltip="当前为游客模式（localStorage）"
-                >
-                  i
-                </button>
+                <Button type="button" size="sm" onClick={() => setShowLogin(true)}>
+                  登录
+                </Button>
+                <TooltipProvider delayDuration={120}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button type="button" variant="outline" size="icon" className="size-8 rounded-full" aria-label="游客模式信息">
+                        <Info aria-hidden="true" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" align="end">
+                      当前为游客模式（localStorage）
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </div>
             </>
           )}
@@ -1184,9 +1527,9 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
           >
             <div className="modal-header">
               <div className="modal-title">登录</div>
-              <button type="button" className="modal-close" onClick={closeLoginModal} aria-label="关闭">
-                ×
-              </button>
+              <Button type="button" variant="ghost" size="icon" className="modal-close" onClick={closeLoginModal} aria-label="关闭">
+                <X aria-hidden="true" />
+              </Button>
             </div>
 
             <form className="modal-body" onSubmit={handleLoginSubmit}>
@@ -1211,26 +1554,111 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
               />
 
               {loginError ? <div className="error-text">{loginError}</div> : null}
-              <button type="submit" disabled={loginPending}>
+              <Button type="submit" size="sm" disabled={loginPending}>
                 {loginPending ? '登录中...' : '确认登录'}
-              </button>
+              </Button>
             </form>
           </div>
         </div>
       ) : null}
 
-      <div className="workspace-mode-row">
-        <button className={mode === 'free' ? 'active' : ''} onClick={() => setMode('free')}>
-          自由模式
-        </button>
-        <button className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>
-          分屏模式
-        </button>
-      </div>
+      {pendingRemoveTarget ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              closeRemoveConfirmModal();
+            }
+          }}
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="确认移除视频"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div className="modal-title">确认移除</div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="modal-close"
+                onClick={closeRemoveConfirmModal}
+                aria-label="关闭"
+              >
+                <X aria-hidden="true" />
+              </Button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-confirm-text">
+                {pendingRemoveTarget.scope === 'library' ? '确认从视频库删除这条视频吗？' : '确认从画布删除这条视频吗？'}
+              </div>
+              <div className="modal-confirm-title">{pendingRemoveTarget.title}</div>
+              <div className="modal-actions">
+                <Button type="button" variant="outline" size="sm" onClick={closeRemoveConfirmModal}>
+                  取消
+                </Button>
+                <Button type="button" size="sm" onClick={confirmRemoveTarget}>
+                  确认删除
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
-      <div className="workspace">
+      <div className={`workspace${libraryCollapsed ? ' workspace-library-hidden' : ''}`}>
         <section className="canvas-pane">
-          <h3>{mode === 'free' ? '左侧自由画布' : '左侧分屏画布'}</h3>
+          <div className="canvas-pane-header">
+            <h3>布局画布</h3>
+            <div className="canvas-pane-actions">
+              {saveStatus !== 'idle' ? (
+                <div className={`save-status-text save-status-text-${saveStatus}`} aria-live="polite">
+                  {saveStatusText}
+                </div>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={mode === 'split' ? splitPast.length === 0 : freePast.length === 0}
+                onClick={undo}
+              >
+                撤销
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={mode === 'split' ? splitFuture.length === 0 : freeFuture.length === 0}
+                onClick={redo}
+              >
+                回退
+              </Button>
+              <TooltipProvider delayDuration={120}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="size-8"
+                      aria-label={libraryCollapsed ? '显示视频库' : '隐藏视频库'}
+                      onClick={toggleLibraryCollapsed}
+                    >
+                      {libraryCollapsed ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    {libraryCollapsed ? '显示视频库' : '隐藏视频库'}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+          </div>
           <div className="canvas-wrap" ref={canvasWrapRef}>
             {mode === 'free' ? (
               <AutoGridLayout
@@ -1267,6 +1695,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                     pushFreeSnapshot(snapshot);
                   }
                 }}
+                resizeHandles={['ne', 'nw', 'se', 'sw']}
                 draggableHandle=".video-card-header"
                 draggableCancel="button"
               >
@@ -1274,17 +1703,18 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                   <div key={item.id} className="video-card">
                     <div className="video-card-header">
                       <div className="video-card-title">{item.title}</div>
-                      <button onClick={() => removeWidget(item.id)} aria-label="删除窗口">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-[26px] rounded-md p-0 text-slate-300 hover:bg-transparent hover:text-slate-50"
+                        onClick={() => requestRemoveFreeWidget(item)}
+                        aria-label="删除窗口"
+                      >
                         ×
-                      </button>
+                      </Button>
                     </div>
-                    <iframe
-                      src={item.embedUrl}
-                      title={item.title}
-                      allowFullScreen
-                      loading="lazy"
-                      referrerPolicy="strict-origin-when-cross-origin"
-                    />
+                    <EmbeddedVideo src={item.embedUrl} title={item.title} />
                   </div>
                 ))}
               </AutoGridLayout>
@@ -1298,34 +1728,46 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                   onLeaveLeaf={() => setHoveredLeafID(null)}
                   onSplitLeaf={handleSplitLeaf}
                   onDropToLeaf={onDropToSplitLeaf}
-                  onRemoveLeafWidget={removeSplitLeafWidget}
+                  onRemoveLeafWidget={requestRemoveSplitLeafWidget}
                   onCollapseSplitLeaf={handleCollapseSplitLeaf}
                   onDividerPointerDown={handleDividerPointerDown}
                 />
               </div>
             )}
 
-            {mode === 'free' && widgets.length === 0 ? <div className="canvas-empty">把右侧条目拖到这里</div> : null}
+            {mode === 'free' && initialized && widgets.length === 0 ? <div className="canvas-empty">把右侧条目拖到这里</div> : null}
+            {!initialized ? (
+              <div className="canvas-loading" role="status" aria-live="polite" aria-label="正在加载布局">
+                <div className="canvas-loading-spinner" />
+                <span>正在加载布局...</span>
+              </div>
+            ) : null}
           </div>
         </section>
 
-        <aside className="side-pane">
-          <h3>右侧列表</h3>
+        {!libraryCollapsed ? (
+          <aside className="side-pane">
+          <div className="side-pane-header">
+            <h3>视频库</h3>
+          </div>
+
           <div className="input-row side-input-row">
-            <input
+            <Input
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
               onKeyDown={onInputKeyDown}
-              placeholder="粘贴 B 站链接后回车"
+              placeholder="粘贴视频链接"
             />
-            <button onClick={addToLibrary}>添加</button>
+            <Button type="button" size="sm" onClick={addToLibrary} disabled={!canAddLibrary}>
+              添加
+            </Button>
           </div>
 
-          <div className="library-list">
-            {library.length === 0 ? (
+          <div className="library-list" ref={libraryListRef} onScroll={handleLibraryListScroll}>
+            {visibleLibrary.length === 0 ? (
               <div className="library-empty">暂无条目，先添加链接</div>
             ) : (
-              library.map((item) => (
+              visibleLibrary.map((item) => (
                 <div
                   key={item.id}
                   className="library-item"
@@ -1333,74 +1775,50 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                   onDragStart={(e) => onLibraryDragStart(e, item.id)}
                   title="拖到左侧画布"
                 >
-                  <div className="library-item-thumb">
-                    {item.coverUrl ? (
-                      <img
-                        src={normalizeCoverPic(item.coverUrl)}
-                        alt=""
-                        loading="lazy"
-                        decoding="async"
-                        referrerPolicy="no-referrer"
-                      />
-                    ) : (
-                      <div className="library-thumb-placeholder" />
-                    )}
+                  <div className="library-item-thumb-wrap">
+                    <div className="library-item-thumb">
+                      {item.coverUrl ? (
+                        <img
+                          src={normalizeCoverPic(item.coverUrl)}
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="library-thumb-placeholder" />
+                      )}
+                    </div>
+                    <div className="library-item-toolbar">
+                      <div className="library-item-drag-tip">拖拽添加</div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="library-item-remove"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          requestRemoveLibraryItem(item);
+                        }}
+                        aria-label="移除条目"
+                      >
+                        ×
+                      </Button>
+                    </div>
                   </div>
                   <div className="library-item-main">
                     <div className="library-item-title">{item.title}</div>
                     {item.upName ? <div className="library-item-up">UP：{item.upName}</div> : null}
                   </div>
-                  <button
-                    type="button"
-                    className="library-item-remove"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeLibraryItem(item.id);
-                    }}
-                    aria-label="移除条目"
-                  >
-                    ×
-                  </button>
                 </div>
               ))
             )}
+            {user && !libraryHasMore && visibleLibrary.length > 0 ? <div className="library-list-tail">已加载全部列表</div> : null}
+            {!user && library.length >= LOCAL_LIBRARY_LIMIT ? <div className="library-list-tail">本地模式最多 20 条</div> : null}
           </div>
-        </aside>
-      </div>
-
-      <div className="hint-row">
-        <span>
-          {message ||
-            (mode === 'free'
-              ? '自由模式：右侧拖到任意网格位置'
-              : '分屏模式：悬浮区域可调分割线与移除分区；标题栏移除视频或移除整块分区')}
-          <button
-            type="button"
-            className="hint-undo"
-            disabled={mode === 'split' ? splitPast.length === 0 : freePast.length === 0}
-            onClick={undo}
-          >
-            撤销
-          </button>
-          <button
-            type="button"
-            className="hint-undo"
-            disabled={mode === 'split' ? splitFuture.length === 0 : freeFuture.length === 0}
-            onClick={redo}
-          >
-            重做
-          </button>
-          <button
-            type="button"
-            className="hint-undo"
-            disabled={mode === 'split' ? splitPast.length === 0 && splitFuture.length === 0 : freePast.length === 0 && freeFuture.length === 0}
-            onClick={() => setShowHistory((v) => !v)}
-          >
-            历史
-          </button>
-        </span>
-        <span>{saving ? '保存中...' : savedAt && Date.now() - savedAt < 1500 ? '已保存' : ''}</span>
+          </aside>
+        ) : null}
       </div>
 
       {showHistory ? (

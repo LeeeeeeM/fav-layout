@@ -39,7 +39,6 @@ export type WorkspaceMode = 'free' | 'split';
 
 export type LayoutPayload = {
   items: Widget[];
-  library: Widget[];
   mode: WorkspaceMode;
   splitRoot: SplitNode;
 };

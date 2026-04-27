@@ -7,3 +7,4 @@ frontend/dist/
 .agents/
 skills-lock.json
 .DS_Store
+node_modules

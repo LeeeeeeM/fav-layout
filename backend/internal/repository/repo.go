@@ -57,6 +57,9 @@ func (r *Repository) FindUserBySession(ctx context.Context, token string) (model
 }
 
 func (r *Repository) SaveLayout(ctx context.Context, userID int64, layout models.Layout) error {
+	if layout.Items == nil {
+		layout.Items = []models.Widget{}
+	}
 	payload, err := json.Marshal(layout)
 	if err != nil {
 		return err
@@ -89,6 +92,44 @@ func (r *Repository) GetLayout(ctx context.Context, userID int64) (models.Layout
 		layout.Items = []models.Widget{}
 	}
 	return layout, nil
+}
+
+func (r *Repository) SaveLibrary(ctx context.Context, userID int64, library []models.Widget) error {
+	if library == nil {
+		library = []models.Widget{}
+	}
+	payload, err := json.Marshal(library)
+	if err != nil {
+		return err
+	}
+
+	stored := models.StoredLibrary{UserID: userID, LibraryJSON: payload}
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "user_id"}},
+			DoUpdates: clause.Assignments(map[string]any{"library_json": payload, "updated_at": gorm.Expr("NOW()")}),
+		}).
+		Create(&stored).Error
+}
+
+func (r *Repository) GetLibrary(ctx context.Context, userID int64) ([]models.Widget, error) {
+	var stored models.StoredLibrary
+	err := r.db.WithContext(ctx).Where("user_id = ?", userID).Take(&stored).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []models.Widget{}, nil
+		}
+		return nil, err
+	}
+
+	var library []models.Widget
+	if err := json.Unmarshal(stored.LibraryJSON, &library); err != nil {
+		return nil, err
+	}
+	if library == nil {
+		library = []models.Widget{}
+	}
+	return library, nil
 }
 
 func (r *Repository) CleanupExpiredSessions(ctx context.Context) error {

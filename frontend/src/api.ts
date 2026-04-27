@@ -1,4 +1,4 @@
-import type { LayoutPayload, User } from './types';
+import type { LayoutPayload, User, Widget } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
@@ -54,6 +54,29 @@ export async function saveLayout(payload: LayoutPayload): Promise<void> {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+}
+
+export type LibraryPageResponse = {
+  items: Widget[];
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  total: number;
+};
+
+export async function saveLibrary(items: Widget[]): Promise<void> {
+  await request<{ ok: boolean }>('/api/library', {
+    method: 'PUT',
+    body: JSON.stringify({ items }),
+  });
+}
+
+export async function getLibraryPage(params: { offset: number; limit: number }): Promise<LibraryPageResponse> {
+  const qs = new URLSearchParams({
+    offset: String(params.offset),
+    limit: String(params.limit),
+  });
+  return request<LibraryPageResponse>(`/api/library?${qs.toString()}`);
 }
 
 export async function getBilibiliView(params: { bvid?: string; aid?: string }): Promise<{ title: string; pic: string; upName?: string }> {

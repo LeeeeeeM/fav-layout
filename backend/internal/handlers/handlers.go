@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,7 +46,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, auth *middleware.Auth) {
 	mux.Handle("POST /api/auth/logout", auth.Require(http.HandlerFunc(h.logout)))
 	mux.Handle("GET /api/auth/me", auth.Require(http.HandlerFunc(h.me)))
 	mux.Handle("GET /api/layout", auth.Require(http.HandlerFunc(h.getLayout)))
+	mux.Handle("GET /api/library", auth.Require(http.HandlerFunc(h.getLibrary)))
 	mux.Handle("PUT /api/layout", auth.Require(http.HandlerFunc(h.saveLayout)))
+	mux.Handle("PUT /api/library", auth.Require(http.HandlerFunc(h.saveLibrary)))
 }
 
 func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
@@ -232,6 +235,50 @@ func (h *Handler) getLayout(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, layout)
 }
 
+func (h *Handler) getLibrary(w http.ResponseWriter, r *http.Request) {
+	user, err := middleware.UserFromContext(r.Context())
+	if err != nil {
+		jsonError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	library, err := h.repo.GetLibrary(r.Context(), user.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to load library")
+		return
+	}
+
+	total := len(library)
+	offset := parseIntQuery(r, "offset", 0)
+	limit := parseIntQuery(r, "limit", 10)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	if offset > total {
+		offset = total
+	}
+
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	items := library[offset:end]
+
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"items":   items,
+		"offset":  offset,
+		"limit":   limit,
+		"hasMore": end < total,
+		"total":   total,
+	})
+}
+
 func (h *Handler) saveLayout(w http.ResponseWriter, r *http.Request) {
 	user, err := middleware.UserFromContext(r.Context())
 	if err != nil {
@@ -256,12 +303,50 @@ func (h *Handler) saveLayout(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (h *Handler) saveLibrary(w http.ResponseWriter, r *http.Request) {
+	user, err := middleware.UserFromContext(r.Context())
+	if err != nil {
+		jsonError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req struct {
+		Items []models.Widget `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Items == nil {
+		req.Items = []models.Widget{}
+	}
+
+	if err := h.repo.SaveLibrary(r.Context(), user.ID, req.Items); err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to save library")
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func genSessionToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func parseIntQuery(r *http.Request, key string, defaultValue int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultValue
+	}
+	return n
 }
 
 func jsonResponse(w http.ResponseWriter, status int, payload any) {

@@ -34,6 +34,16 @@ func (StoredLayout) TableName() string {
 	return "layouts"
 }
 
+type StoredLibrary struct {
+	UserID      int64     `gorm:"primaryKey;column:user_id"`
+	LibraryJSON []byte    `gorm:"column:library_json;type:jsonb"`
+	UpdatedAt   time.Time `gorm:"column:updated_at"`
+}
+
+func (StoredLibrary) TableName() string {
+	return "libraries"
+}
+
 type Widget struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
@@ -49,7 +59,6 @@ type Widget struct {
 
 type Layout struct {
 	Items     []Widget       `json:"items"`
-	Library   []Widget       `json:"library"`
 	Mode      string         `json:"mode,omitempty"`
 	SplitRoot map[string]any `json:"splitRoot,omitempty"`
 }
