@@ -26,12 +26,13 @@ export default function LoginPage({ loading, onSubmit }: LoginPageProps) {
         <h1>摸鱼布局</h1>
         <p>先登录再开始摆放 B 站窗口</p>
 
-        <label htmlFor="username">用户名</label>
+        <label htmlFor="username">用户名 / 邮箱</label>
         <input
           id="username"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           autoComplete="username"
+          placeholder="请输入用户名或邮箱"
           required
         />
 

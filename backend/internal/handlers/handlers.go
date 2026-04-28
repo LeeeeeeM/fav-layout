@@ -54,6 +54,17 @@ type updateProfileRequest struct {
 	AvatarURL string `json:"avatarUrl"`
 }
 
+type sendChangePasswordVerificationCodeRequest struct {
+	CaptchaID   string `json:"captchaId"`
+	CaptchaCode string `json:"captchaCode"`
+}
+
+type changePasswordRequest struct {
+	CurrentPassword   string `json:"currentPassword"`
+	NewPassword       string `json:"newPassword"`
+	VerificationCode  string `json:"verificationCode"`
+}
+
 type userResponse struct {
 	User map[string]any `json:"user"`
 }
@@ -76,6 +87,18 @@ type sendRegisterVerificationCodeRequest struct {
 	CaptchaCode string `json:"captchaCode"`
 }
 
+type sendResetPasswordVerificationCodeRequest struct {
+	Email       string `json:"email"`
+	CaptchaID   string `json:"captchaId"`
+	CaptchaCode string `json:"captchaCode"`
+}
+
+type resetPasswordRequest struct {
+	Email            string `json:"email"`
+	NewPassword      string `json:"newPassword"`
+	VerificationCode string `json:"verificationCode"`
+}
+
 type captchaResponse struct {
 	CaptchaID    string `json:"captchaId"`
 	ImageBase64  string `json:"imageBase64"`
@@ -89,6 +112,8 @@ const (
 	codeTTL          = 10 * time.Minute
 	sendCooldown     = 60 * time.Second
 	purposeRegister  = "register"
+	purposeChangePassword = "change_password"
+	purposeResetPassword  = "reset_password"
 )
 
 var (
@@ -113,11 +138,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, auth *middleware.Auth) {
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("GET /api/auth/captcha", h.getCaptcha)
 	mux.HandleFunc("POST /api/auth/email-verification/register", h.sendRegisterVerificationCode)
+	mux.HandleFunc("POST /api/auth/email-verification/reset-password", h.sendResetPasswordVerificationCode)
+	mux.HandleFunc("POST /api/auth/reset-password", h.resetPassword)
 	mux.HandleFunc("GET /api/bilibili/view", h.bilibiliView)
 	mux.Handle("POST /api/auth/logout", auth.Require(http.HandlerFunc(h.logout)))
 	mux.Handle("GET /api/auth/me", auth.Require(http.HandlerFunc(h.me)))
 	mux.Handle("GET /api/profile", auth.Require(http.HandlerFunc(h.getProfile)))
 	mux.Handle("PUT /api/profile", auth.Require(http.HandlerFunc(h.updateProfile)))
+	mux.Handle("POST /api/profile/email-verification/change-password", auth.Require(http.HandlerFunc(h.sendChangePasswordVerificationCode)))
+	mux.Handle("POST /api/profile/change-password", auth.Require(http.HandlerFunc(h.changePassword)))
 	mux.Handle("GET /api/layout", auth.Require(http.HandlerFunc(h.getLayout)))
 	mux.Handle("GET /api/library", auth.Require(http.HandlerFunc(h.getLibrary)))
 	mux.Handle("PUT /api/layout", auth.Require(http.HandlerFunc(h.saveLayout)))
@@ -242,16 +271,23 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.Username = strings.TrimSpace(req.Username)
-	if req.Username == "" || req.Password == "" {
-		jsonError(w, http.StatusBadRequest, "username and password are required")
+	identifier := strings.TrimSpace(req.Username)
+	if identifier == "" || req.Password == "" {
+		jsonError(w, http.StatusBadRequest, "username/email and password are required")
 		return
 	}
 
-	user, err := h.repo.FindUserByUsername(r.Context(), req.Username)
+	// Accept both username and email for login without changing request shape.
+	var user models.User
+	var err error
+	user, err = h.repo.FindUserByUsername(r.Context(), identifier)
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "invalid username or password")
-		return
+		email := strings.TrimSpace(strings.ToLower(identifier))
+		user, err = h.repo.FindUserByEmail(r.Context(), email)
+		if err != nil {
+			jsonError(w, http.StatusUnauthorized, "invalid username or password")
+			return
+		}
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
@@ -427,6 +463,136 @@ func (h *Handler) sendRegisterVerificationCode(w http.ResponseWriter, r *http.Re
 	jsonResponse(w, http.StatusOK, okResponse{OK: true})
 }
 
+func (h *Handler) sendResetPasswordVerificationCode(w http.ResponseWriter, r *http.Request) {
+	var req sendResetPasswordVerificationCodeRequest
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	email := strings.TrimSpace(strings.ToLower(req.Email))
+	if email == "" {
+		jsonError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+	if !isValidEmail(email) {
+		jsonError(w, http.StatusBadRequest, "invalid email")
+		return
+	}
+	if !h.mailConfigured() {
+		jsonError(w, http.StatusServiceUnavailable, "mail service unavailable: missing RESEND_API_KEY or RESEND_FROM_EMAIL")
+		return
+	}
+	if strings.TrimSpace(req.CaptchaID) == "" || strings.TrimSpace(req.CaptchaCode) == "" {
+		jsonError(w, http.StatusBadRequest, "captchaId and captchaCode are required")
+		return
+	}
+	if err := h.captchaSvc.VerifyAndConsume(req.CaptchaID, req.CaptchaCode); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid captcha")
+		return
+	}
+
+	lastAt, ok, err := h.repo.LastEmailVerificationCreatedAt(r.Context(), email, purposeResetPassword)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to send verification code")
+		return
+	}
+	if ok && time.Since(lastAt) < sendCooldown {
+		wait := sendCooldown - time.Since(lastAt)
+		sec := int(wait.Seconds()) + 1
+		if sec < 1 {
+			sec = 1
+		}
+		jsonError(w, http.StatusTooManyRequests, fmt.Sprintf("too many requests, retry after %d seconds", sec))
+		return
+	}
+
+	// Avoid user enumeration and mailbox spamming: only send if the email exists, otherwise return ok.
+	if _, err := h.repo.FindUserByEmail(r.Context(), email); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			jsonResponse(w, http.StatusOK, okResponse{OK: true})
+			return
+		}
+		jsonError(w, http.StatusInternalServerError, "failed to send verification code")
+		return
+	}
+
+	plain, err := randomDigits(6)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to generate verification code")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to send verification code")
+		return
+	}
+	rec := &models.EmailVerification{
+		Email:     email,
+		Purpose:   purposeResetPassword,
+		CodeHash:  string(hash),
+		ExpiresAt: time.Now().Add(codeTTL),
+	}
+	if err := h.repo.CreateEmailVerification(r.Context(), rec); err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to send verification code")
+		return
+	}
+
+	html := fmt.Sprintf(
+		"<p>您正在重置密码，验证码为：</p><p style=\"font-size:24px;font-weight:bold;letter-spacing:4px;\">%s</p><p>验证码 %d 分钟内有效，请勿泄露给他人。</p>",
+		plain, int(codeTTL.Minutes()),
+	)
+	if err := h.sendMailHTML([]string{email}, "重置密码验证码", html); err != nil {
+		_ = h.repo.DeleteEmailVerificationByID(r.Context(), rec.ID)
+		jsonError(w, http.StatusServiceUnavailable, "mail service unavailable")
+		return
+	}
+	jsonResponse(w, http.StatusOK, okResponse{OK: true})
+}
+
+func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
+	var req resetPasswordRequest
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	email := strings.TrimSpace(strings.ToLower(req.Email))
+	next := req.NewPassword
+	code := strings.TrimSpace(req.VerificationCode)
+	if email == "" || next == "" || code == "" {
+		jsonError(w, http.StatusBadRequest, "email, newPassword and verificationCode are required")
+		return
+	}
+	if !isValidEmail(email) {
+		jsonError(w, http.StatusBadRequest, "invalid email")
+		return
+	}
+	if len(next) < 6 {
+		jsonError(w, http.StatusBadRequest, "password must be at least 6 characters")
+		return
+	}
+
+	user, err := h.repo.FindUserByEmail(r.Context(), email)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid or expired verification code")
+		return
+	}
+	if err := h.verifyAndConsumeCode(r.Context(), email, purposeResetPassword, code); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid or expired verification code")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(next), bcrypt.DefaultCost)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to reset password")
+		return
+	}
+	if err := h.repo.ResetPasswordAndDeleteSessions(r.Context(), user.ID, string(hash)); err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to reset password")
+		return
+	}
+	jsonResponse(w, http.StatusOK, okResponse{OK: true})
+}
+
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(h.cookieName)
 	if err == nil && cookie.Value != "" {
@@ -496,6 +662,155 @@ func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, userResponse{User: mapUser(updated)})
+}
+
+func (h *Handler) sendChangePasswordVerificationCode(w http.ResponseWriter, r *http.Request) {
+	user, err := middleware.UserFromContext(r.Context())
+	if err != nil {
+		jsonError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !h.mailConfigured() {
+		jsonError(w, http.StatusServiceUnavailable, "mail service unavailable: missing RESEND_API_KEY or RESEND_FROM_EMAIL")
+		return
+	}
+
+	var req sendChangePasswordVerificationCodeRequest
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(req.CaptchaID) == "" || strings.TrimSpace(req.CaptchaCode) == "" {
+		jsonError(w, http.StatusBadRequest, "captchaId and captchaCode are required")
+		return
+	}
+	if err := h.captchaSvc.VerifyAndConsume(req.CaptchaID, req.CaptchaCode); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid captcha")
+		return
+	}
+
+	fullUser, err := h.repo.FindUserByID(r.Context(), user.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to load user")
+		return
+	}
+	email := strings.TrimSpace(strings.ToLower(fullUser.Email))
+	if email == "" || !isValidEmail(email) {
+		jsonError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+
+	lastAt, ok, err := h.repo.LastEmailVerificationCreatedAt(r.Context(), email, purposeChangePassword)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to send verification code")
+		return
+	}
+	if ok && time.Since(lastAt) < sendCooldown {
+		wait := sendCooldown - time.Since(lastAt)
+		sec := int(wait.Seconds()) + 1
+		if sec < 1 {
+			sec = 1
+		}
+		jsonError(w, http.StatusTooManyRequests, fmt.Sprintf("too many requests, retry after %d seconds", sec))
+		return
+	}
+
+	plain, err := randomDigits(6)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to generate verification code")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to send verification code")
+		return
+	}
+	rec := &models.EmailVerification{
+		Email:     email,
+		Purpose:   purposeChangePassword,
+		CodeHash:  string(hash),
+		ExpiresAt: time.Now().Add(codeTTL),
+	}
+	if err := h.repo.CreateEmailVerification(r.Context(), rec); err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to send verification code")
+		return
+	}
+
+	html := fmt.Sprintf(
+		"<p>您正在修改密码，验证码为：</p><p style=\"font-size:24px;font-weight:bold;letter-spacing:4px;\">%s</p><p>验证码 %d 分钟内有效，请勿泄露给他人。</p>",
+		plain, int(codeTTL.Minutes()),
+	)
+	if err := h.sendMailHTML([]string{email}, "修改密码验证码", html); err != nil {
+		_ = h.repo.DeleteEmailVerificationByID(r.Context(), rec.ID)
+		jsonError(w, http.StatusServiceUnavailable, "mail service unavailable")
+		return
+	}
+	jsonResponse(w, http.StatusOK, okResponse{OK: true})
+}
+
+func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
+	user, err := middleware.UserFromContext(r.Context())
+	if err != nil {
+		jsonError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req changePasswordRequest
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	current := req.CurrentPassword
+	next := req.NewPassword
+	code := strings.TrimSpace(req.VerificationCode)
+	if current == "" || next == "" || code == "" {
+		jsonError(w, http.StatusBadRequest, "currentPassword, newPassword and verificationCode are required")
+		return
+	}
+	if len(next) < 6 {
+		jsonError(w, http.StatusBadRequest, "password must be at least 6 characters")
+		return
+	}
+
+	fullUser, err := h.repo.FindUserByID(r.Context(), user.ID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to load user")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(fullUser.PasswordHash), []byte(current)); err != nil {
+		jsonError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+
+	email := strings.TrimSpace(strings.ToLower(fullUser.Email))
+	if email == "" || !isValidEmail(email) {
+		jsonError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+	if err := h.verifyAndConsumeCode(r.Context(), email, purposeChangePassword, code); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid or expired verification code")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(next), bcrypt.DefaultCost)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to change password")
+		return
+	}
+
+	token, err := genSessionToken()
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+	expiresAt := time.Now().Add(time.Duration(h.maxAgeSec) * time.Second)
+	if err := h.repo.ChangePasswordAndRotateSessions(r.Context(), fullUser.ID, string(hash), token, expiresAt); err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to change password")
+		return
+	}
+	h.writeSessionCookie(w, token)
+	jsonResponse(w, http.StatusOK, okResponse{OK: true})
 }
 
 func (h *Handler) getLayout(w http.ResponseWriter, r *http.Request) {

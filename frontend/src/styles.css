@@ -639,6 +639,7 @@ input:not([data-slot='input']) {
   border: 1px dashed var(--canvas-empty-border);
   border-radius: 10px;
   color: var(--canvas-empty-text);
+  font-size: 13px;
   pointer-events: none;
 }
 
@@ -920,7 +921,7 @@ input:not([data-slot='input']) {
 .side-input-row {
   display: grid;
   grid-template-columns: 1fr auto;
-  align-items: stretch;
+  align-items: center;
   gap: 8px;
   margin-bottom: 10px;
 }

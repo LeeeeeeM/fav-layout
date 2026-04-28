@@ -57,6 +57,20 @@ export async function sendRegisterVerificationCode(params: { email: string; capt
   });
 }
 
+export async function sendResetPasswordVerificationCode(params: { email: string; captchaId: string; captchaCode: string }): Promise<void> {
+  await request<{ ok: boolean }>('/api/auth/email-verification/reset-password', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function resetPassword(params: { email: string; newPassword: string; verificationCode: string }): Promise<void> {
+  await request<{ ok: boolean }>('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
 export async function getCaptcha(): Promise<{ captchaId: string; imageBase64: string; imageDataUrl: string }> {
   return request<{ captchaId: string; imageBase64: string; imageDataUrl: string }>('/api/auth/captcha');
 }
@@ -77,6 +91,20 @@ export async function updateProfile(payload: { nickname: string; avatarUrl: stri
     body: JSON.stringify(payload),
   });
   return data.user;
+}
+
+export async function sendChangePasswordVerificationCode(params: { captchaId: string; captchaCode: string }): Promise<void> {
+  await request<{ ok: boolean }>('/api/profile/email-verification/change-password', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function changePassword(params: { currentPassword: string; newPassword: string; verificationCode: string }): Promise<void> {
+  await request<{ ok: boolean }>('/api/profile/change-password', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
 }
 
 export async function logout(): Promise<void> {

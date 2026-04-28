@@ -9,6 +9,7 @@ import type { User } from './types';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const isDark = useWorkspaceStore((s) => s.isDark);
   const navigate = useNavigate();
 
@@ -24,6 +25,10 @@ export default function App() {
       } catch {
         if (!canceled) {
           setUser(null);
+        }
+      } finally {
+        if (!canceled) {
+          setAuthReady(true);
         }
       }
     }
@@ -72,7 +77,11 @@ export default function App() {
         <Route
           path="/profile"
           element={
-            user ? (
+            !authReady ? (
+              <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                正在加载用户信息...
+              </div>
+            ) : user ? (
               <ProfilePage user={user} onBack={() => navigate('/')} onProfileUpdated={handleProfileUpdated} />
             ) : (
               <Navigate to="/" replace />

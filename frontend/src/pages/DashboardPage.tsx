@@ -10,7 +10,16 @@ import {
   useState,
 } from 'react';
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout';
-import { getCaptcha, getLayout, getLibraryPage, saveLayout, saveLibrary, sendRegisterVerificationCode } from '../api';
+import {
+  getCaptcha,
+  getLayout,
+  getLibraryPage,
+  resetPassword,
+  saveLayout,
+  saveLibrary,
+  sendRegisterVerificationCode,
+  sendResetPasswordVerificationCode,
+} from '../api';
 import type { SplitBranch, SplitDirection, SplitLeaf, SplitNode, User, Widget, WorkspaceMode } from '../types';
 import { dedupeWidgetsById, loadAllLibraryPages, nextVisibleLibrary } from './dashboard/library-paging';
 import { fetchBilibiliMeta, normalizeCoverPic, toBilibiliEmbed } from '../utils/bilibili';
@@ -533,7 +542,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
   const pendingSaveCountRef = useRef(0);
 
   const [showLogin, setShowLogin] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [pendingRemoveTarget, setPendingRemoveTarget] = useState<RemoveTarget | null>(null);
   const [loginUsername, setLoginUsername] = useState('admin');
   const [loginPassword, setLoginPassword] = useState('admin123');
@@ -543,7 +552,14 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
   const [registerCaptchaId, setRegisterCaptchaID] = useState('');
   const [registerCaptchaCode, setRegisterCaptchaCode] = useState('');
   const [registerCaptchaImage, setRegisterCaptchaImage] = useState('');
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetVerificationCode, setResetVerificationCode] = useState('');
+  const [resetCaptchaId, setResetCaptchaID] = useState('');
+  const [resetCaptchaCode, setResetCaptchaCode] = useState('');
+  const [resetCaptchaImage, setResetCaptchaImage] = useState('');
   const [showCaptchaModal, setShowCaptchaModal] = useState(false);
+  const [captchaPurpose, setCaptchaPurpose] = useState<'register' | 'reset'>('register');
   const [verifyCodePending, setVerifyCodePending] = useState(false);
   const [verifyCooldownSec, setVerifyCooldownSec] = useState(0);
   const [loginPending, setLoginPending] = useState(false);
@@ -559,6 +575,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
     setVerifyCooldownSec(0);
     setShowCaptchaModal(false);
     setRegisterCaptchaCode('');
+    setResetCaptchaCode('');
   }
 
   function closeRemoveConfirmModal() {
@@ -1389,21 +1406,37 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
 
   async function handleLoginSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const modeAtSubmit = authMode;
     setLoginPending(true);
     try {
-      if (authMode === 'register') {
+      if (modeAtSubmit === 'register') {
         if (loginPassword !== registerConfirmPassword) {
           setAuthErrorMessage('两次输入的密码不一致');
           return;
         }
         await onRegister(loginUsername, registerEmail, loginPassword, registerVerificationCode);
+        closeLoginModal();
+        setMessage('注册成功，已切换到后端保存');
+      } else if (modeAtSubmit === 'forgot') {
+        await resetPassword({
+          email: resetEmail.trim(),
+          newPassword: resetNewPassword,
+          verificationCode: resetVerificationCode.trim(),
+        });
+        setMessage('密码已重置，请使用新密码登录');
+        setAuthMode('login');
+        setResetNewPassword('');
+        setResetVerificationCode('');
+        setResetCaptchaCode('');
       } else {
         await onLogin(loginUsername, loginPassword);
+        closeLoginModal();
+        setMessage('登录成功，已切换到后端保存');
       }
-      closeLoginModal();
-      setMessage(authMode === 'register' ? '注册成功，已切换到后端保存' : '登录成功，已切换到后端保存');
     } catch (err) {
-      setAuthErrorMessage(err instanceof Error ? err.message : authMode === 'register' ? '注册失败' : '登录失败');
+      setAuthErrorMessage(
+        err instanceof Error ? err.message : modeAtSubmit === 'register' ? '注册失败' : modeAtSubmit === 'forgot' ? '重置失败' : '登录失败',
+      );
     } finally {
       setLoginPending(false);
     }
@@ -1437,23 +1470,38 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
   }
 
   async function handleVerifyCaptchaAndSendCode() {
-    if (!registerCaptchaId || !registerCaptchaCode.trim()) {
+    const captchaId = captchaPurpose === 'register' ? registerCaptchaId : resetCaptchaId;
+    const captchaCode = captchaPurpose === 'register' ? registerCaptchaCode : resetCaptchaCode;
+    if (!captchaId || !captchaCode.trim()) {
       setAuthErrorMessage('请输入图形验证码');
       return;
     }
     setVerifyCodePending(true);
     try {
-      await sendRegisterVerificationCode({
-        email: registerEmail.trim(),
-        captchaId: registerCaptchaId,
-        captchaCode: registerCaptchaCode.trim(),
-      });
+      if (captchaPurpose === 'register') {
+        await sendRegisterVerificationCode({
+          email: registerEmail.trim(),
+          captchaId,
+          captchaCode: captchaCode.trim(),
+        });
+        setMessage('验证码已发送，请查收邮箱');
+      } else {
+        await sendResetPasswordVerificationCode({
+          email: resetEmail.trim(),
+          captchaId,
+          captchaCode: captchaCode.trim(),
+        });
+        setMessage('验证码已发送（若邮箱存在）');
+      }
       setShowCaptchaModal(false);
-      setMessage('验证码已发送，请查收邮箱');
       setVerifyCooldownSec(60);
     } catch (err) {
       setAuthErrorMessage(err instanceof Error ? err.message : '发送验证码失败');
-      void refreshRegisterCaptcha();
+      if (captchaPurpose === 'register') {
+        void refreshRegisterCaptcha();
+      } else {
+        void refreshResetCaptcha();
+      }
     } finally {
       setVerifyCodePending(false);
     }
@@ -1472,6 +1520,37 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
       void refreshRegisterCaptcha();
     }
   }, [showLogin, authMode]);
+
+  async function handleSendResetCode() {
+    if (!resetEmail.trim()) {
+      setAuthErrorMessage('请先输入邮箱');
+      return;
+    }
+    if (verifyCooldownSec > 0) {
+      return;
+    }
+    try {
+      setCaptchaPurpose('reset');
+      const data = await getCaptcha();
+      setResetCaptchaID(data.captchaId);
+      setResetCaptchaImage(data.imageDataUrl);
+      setResetCaptchaCode('');
+      setShowCaptchaModal(true);
+    } catch (err) {
+      setAuthErrorMessage(err instanceof Error ? err.message : '获取图形验证码失败');
+    }
+  }
+
+  async function refreshResetCaptcha() {
+    try {
+      const data = await getCaptcha();
+      setResetCaptchaID(data.captchaId);
+      setResetCaptchaImage(data.imageDataUrl);
+      setResetCaptchaCode('');
+    } catch {
+      setAuthErrorMessage('获取图形验证码失败');
+    }
+  }
 
   const canAddLibrary = user ? true : library.length < LOCAL_LIBRARY_LIMIT;
   const visibleLibrary = libraryVisible;
@@ -1603,40 +1682,54 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
             className="modal"
             role="dialog"
             aria-modal="true"
-            aria-label="登录"
+            aria-label={authMode === 'register' ? '注册' : authMode === 'forgot' ? '忘记密码' : '登录'}
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="modal-header">
-              <div className="modal-title">{authMode === 'register' ? '注册' : '登录'}</div>
+              <div className="modal-title">{authMode === 'register' ? '注册' : authMode === 'forgot' ? '忘记密码' : '登录'}</div>
               <Button type="button" variant="ghost" size="icon" className="modal-close" onClick={closeLoginModal} aria-label="关闭">
                 <X aria-hidden="true" />
               </Button>
             </div>
 
             <form className="modal-body" onSubmit={handleLoginSubmit}>
-              <label htmlFor="login-username">用户名</label>
-              <input
-                ref={loginFirstInputRef}
-                id="login-username"
-                value={loginUsername}
-                onChange={(e) => setLoginUsername(e.target.value)}
-                autoComplete="username"
-                placeholder="请输入用户名"
-                required
-              />
+              {authMode !== 'forgot' ? (
+                <>
+                  <label htmlFor="login-username">用户名 / 邮箱</label>
+                  <input
+                    ref={loginFirstInputRef}
+                    id="login-username"
+                    value={loginUsername}
+                    onChange={(e) => setLoginUsername(e.target.value)}
+                    autoComplete="username"
+                    placeholder="请输入用户名或邮箱"
+                    required
+                  />
 
-              <label htmlFor="login-password">密码</label>
-              <input
-                id="login-password"
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                autoComplete="current-password"
-                placeholder={authMode === 'register' ? '至少 6 位' : '请输入密码'}
-                required
-              />
+                  <label htmlFor="login-password">密码</label>
+                  <input
+                    id="login-password"
+                    type="password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    autoComplete="current-password"
+                    placeholder={authMode === 'register' ? '至少 6 位' : '请输入密码'}
+                    required
+                  />
+                </>
+              ) : null}
               {authMode === 'register' ? (
                 <>
+                  <label htmlFor="register-confirm-password">确认密码</label>
+                  <input
+                    id="register-confirm-password"
+                    type="password"
+                    value={registerConfirmPassword}
+                    onChange={(e) => setRegisterConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                    placeholder="请再次输入密码"
+                    required
+                  />
                   <label htmlFor="register-email">邮箱</label>
                   <input
                     id="register-email"
@@ -1665,32 +1758,101 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
                       {verifyCodePending ? '发送中...' : verifyCooldownSec > 0 ? `${verifyCooldownSec}s` : '发送验证码'}
                     </Button>
                   </div>
-                  <label htmlFor="register-confirm-password">确认密码</label>
+                </>
+              ) : authMode === 'forgot' ? (
+                <>
+                  <label htmlFor="reset-email">邮箱</label>
                   <input
-                    id="register-confirm-password"
+                    id="reset-email"
+                    type="email"
+                    value={resetEmail}
+                    onChange={(e) => setResetEmail(e.target.value)}
+                    autoComplete="email"
+                    placeholder="请输入注册邮箱"
+                    required
+                  />
+
+                  <label htmlFor="reset-verification-code">邮箱验证码</label>
+                  <div className="side-input-row">
+                    <input
+                      id="reset-verification-code"
+                      value={resetVerificationCode}
+                      onChange={(e) => setResetVerificationCode(e.target.value)}
+                      placeholder="输入6位邮箱验证码"
+                      required
+                    />
+                    <Button type="button" size="sm" onClick={handleSendResetCode} disabled={verifyCodePending || verifyCooldownSec > 0}>
+                      {verifyCodePending ? '发送中...' : verifyCooldownSec > 0 ? `${verifyCooldownSec}s` : '发送验证码'}
+                    </Button>
+                  </div>
+
+                  <label htmlFor="reset-new-password">新密码</label>
+                  <input
+                    id="reset-new-password"
                     type="password"
-                    value={registerConfirmPassword}
-                    onChange={(e) => setRegisterConfirmPassword(e.target.value)}
+                    value={resetNewPassword}
+                    onChange={(e) => setResetNewPassword(e.target.value)}
                     autoComplete="new-password"
-                    placeholder="请再次输入密码"
+                    placeholder="至少 6 位"
                     required
                   />
                 </>
               ) : null}
 
               <Button type="submit" size="sm" disabled={loginPending}>
-                {loginPending ? (authMode === 'register' ? '注册中...' : '登录中...') : authMode === 'register' ? '确认注册' : '确认登录'}
+                {loginPending
+                  ? authMode === 'register'
+                    ? '注册中...'
+                    : authMode === 'forgot'
+                      ? '提交中...'
+                      : '登录中...'
+                  : authMode === 'register'
+                    ? '确认注册'
+                    : authMode === 'forgot'
+                      ? '重置密码'
+                      : '确认登录'}
               </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setAuthMode((m) => (m === 'login' ? 'register' : 'login'));
-                }}
-              >
-                {authMode === 'register' ? '已有账号，去登录' : '没有账号，去注册'}
-              </Button>
+              {authMode === 'login' ? (
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    className="h-auto p-0"
+                    onClick={() => {
+                      setAuthMode('register');
+                      setAuthErrorMessage('');
+                    }}
+                  >
+                    没有账号，去注册
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    className="h-auto p-0"
+                    onClick={() => {
+                      setAuthMode('forgot');
+                      setAuthErrorMessage('');
+                    }}
+                  >
+                    忘记密码
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0"
+                  onClick={() => {
+                    setAuthMode('login');
+                    setAuthErrorMessage('');
+                  }}
+                >
+                  {authMode === 'register' ? '已有账号，去登录' : '返回登录'}
+                </Button>
+              )}
             </form>
           </div>
         </div>
@@ -1756,16 +1918,27 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
             <div className="modal-body">
               <div className="side-input-row">
                 <input
-                  value={registerCaptchaCode}
-                  onChange={(e) => setRegisterCaptchaCode(e.target.value)}
+                  value={captchaPurpose === 'register' ? registerCaptchaCode : resetCaptchaCode}
+                  onChange={(e) =>
+                    captchaPurpose === 'register' ? setRegisterCaptchaCode(e.target.value) : setResetCaptchaCode(e.target.value)
+                  }
                   placeholder="请输入图片中的字符"
                 />
-                {registerCaptchaImage ? (
+                {captchaPurpose === 'register' ? (
+                  registerCaptchaImage ? (
+                    <img
+                      src={registerCaptchaImage}
+                      alt="图形验证码"
+                      style={{ height: 44, width: 140, borderRadius: 8, border: '1px solid hsl(var(--border))', cursor: 'pointer' }}
+                      onClick={() => void refreshRegisterCaptcha()}
+                    />
+                  ) : null
+                ) : resetCaptchaImage ? (
                   <img
-                    src={registerCaptchaImage}
+                    src={resetCaptchaImage}
                     alt="图形验证码"
                     style={{ height: 44, width: 140, borderRadius: 8, border: '1px solid hsl(var(--border))', cursor: 'pointer' }}
-                    onClick={() => void refreshRegisterCaptcha()}
+                    onClick={() => void refreshResetCaptcha()}
                   />
                 ) : null}
               </div>
@@ -1907,7 +2080,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
               </div>
             )}
 
-            {mode === 'free' && initialized && widgets.length === 0 ? <div className="canvas-empty">把右侧视频拖到这里</div> : null}
+            {mode === 'free' && initialized && widgets.length === 0 ? <div className="canvas-empty">拖拽右侧视频到此区域</div> : null}
             {!initialized ? (
               <div className="canvas-loading" role="status" aria-live="polite" aria-label="正在加载布局">
                 <div className="canvas-loading-spinner" />
@@ -1937,7 +2110,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
 
           <div className="library-list" ref={libraryListRef} onScroll={handleLibraryListScroll}>
             {visibleLibrary.length === 0 ? (
-              <div className="library-empty">暂无条目，先添加链接</div>
+              <div className="library-empty">暂无视频，先添加链接</div>
             ) : (
               visibleLibrary.map((item) => (
                 <div

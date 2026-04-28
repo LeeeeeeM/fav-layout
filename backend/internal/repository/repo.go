@@ -126,7 +126,7 @@ func (r *Repository) FindUserBySession(ctx context.Context, token string) (model
 	var u models.User
 	err := r.db.WithContext(ctx).
 		Table("users u").
-		Select("u.id, u.username, u.nickname, u.avatar_url, u.created_at").
+		Select("u.id, u.username, u.email, u.nickname, u.avatar_url, u.created_at").
 		Joins("JOIN sessions s ON s.user_id = u.id").
 		Where("s.token = ? AND s.expires_at > NOW()", token).
 		Take(&u).Error
@@ -134,6 +134,40 @@ func (r *Repository) FindUserBySession(ctx context.Context, token string) (model
 		return models.User{}, err
 	}
 	return u, nil
+}
+
+func (r *Repository) FindUserByID(ctx context.Context, id int64) (models.User, error) {
+	var u models.User
+	if err := r.db.WithContext(ctx).Where("id = ?", id).Take(&u).Error; err != nil {
+		return models.User{}, err
+	}
+	return u, nil
+}
+
+func (r *Repository) ChangePasswordAndRotateSessions(ctx context.Context, userID int64, newPasswordHash, newToken string, newExpiresAt time.Time) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.User{}).Where("id = ?", userID).Update("password_hash", newPasswordHash).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", userID).Delete(&models.Session{}).Error; err != nil {
+			return err
+		}
+		s := models.Session{
+			Token:     newToken,
+			UserID:    userID,
+			ExpiresAt: newExpiresAt.UTC(),
+		}
+		return tx.Create(&s).Error
+	})
+}
+
+func (r *Repository) ResetPasswordAndDeleteSessions(ctx context.Context, userID int64, newPasswordHash string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.User{}).Where("id = ?", userID).Update("password_hash", newPasswordHash).Error; err != nil {
+			return err
+		}
+		return tx.Where("user_id = ?", userID).Delete(&models.Session{}).Error
+	})
 }
 
 func (r *Repository) UpdateUserProfile(ctx context.Context, userID int64, nickname, avatarURL string) (models.User, error) {
