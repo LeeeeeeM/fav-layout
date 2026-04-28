@@ -71,13 +71,29 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 /** 按当前画布宽度把网格里的列宽换算成像素，使默认卡片接近 16:9（宽/高）。 */
-function defaultHeightFor169(gridWidthPx: number, w: number): number {
+function heightForAspect(gridWidthPx: number, w: number, aspectRatio: number): number {
   if (gridWidthPx <= 0 || w <= 0) {
     return 6;
   }
   const colWidthPx = gridWidthPx / GRID_COLS;
-  const hFloat = (w * colWidthPx) / (ASPECT_16_9 * ROW_HEIGHT_PX);
+  const safeAspect = aspectRatio > 0 ? aspectRatio : ASPECT_16_9;
+  const hFloat = (w * colWidthPx) / (safeAspect * ROW_HEIGHT_PX);
   return clamp(Math.round(hFloat), 4, 30);
+}
+
+function aspectFromGrid(gridWidthPx: number, w: number, h: number): number {
+  if (gridWidthPx <= 0 || w <= 0 || h <= 0) {
+    return ASPECT_16_9;
+  }
+  const colWidthPx = gridWidthPx / GRID_COLS;
+  const widthPx = w * colWidthPx;
+  const heightPx = h * ROW_HEIGHT_PX;
+  if (heightPx <= 0) {
+    return ASPECT_16_9;
+  }
+  // Keep a stable precision to avoid noisy layout diffs.
+  const raw = widthPx / heightPx;
+  return Math.round(raw * 1e6) / 1e6;
 }
 
 function makeLeaf(widget?: Widget): SplitLeaf {
@@ -524,6 +540,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
   const libraryListRef = useRef<HTMLDivElement>(null);
   const libraryMetaRequested = useRef(new Set<string>());
   const isResizingSplitRef = useRef(false);
+  const isInteractingFreeRef = useRef(false);
   const [saveNonce, setSaveNonce] = useState(0);
   type FreeHistorySnapshot = { label: string; at: number; widgets: Widget[] };
   type SplitHistorySnapshot = { label: string; at: number; splitRoot: SplitNode };
@@ -752,6 +769,32 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
     };
   }, []);
 
+  // Keep each free-mode widget's aspect ratio when canvas width changes.
+  useEffect(() => {
+    if (!initialized || mode !== 'free') {
+      return;
+    }
+    if (isInteractingFreeRef.current) {
+      return;
+    }
+    if (freeCanvasWidth <= 0) {
+      return;
+    }
+
+    setWidgets((prev) => {
+      let changed = false;
+      const next = prev.map((item) => {
+        const h = heightForAspect(freeCanvasWidth, item.w, item.aspectRatio ?? ASPECT_16_9);
+        if (h === item.h) {
+          return item;
+        }
+        changed = true;
+        return { ...item, h };
+      });
+      return changed ? next : prev;
+    });
+  }, [freeCanvasWidth, initialized, mode]);
+
   useEffect(() => {
     const mq = window.matchMedia?.('(hover: none), (pointer: coarse)');
     if (!mq) {
@@ -888,7 +931,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [widgets, splitRoot, mode]);
 
-  const default169H = useMemo(() => defaultHeightFor169(freeCanvasWidth, DEFAULT_W), [freeCanvasWidth]);
+  const default169H = useMemo(() => heightForAspect(freeCanvasWidth, DEFAULT_W, ASPECT_16_9), [freeCanvasWidth]);
 
   useEffect(() => {
     if (!initialized) {
@@ -1138,6 +1181,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
         title: parsed.title,
         inputUrl: raw,
         embedUrl: parsed.embedUrl,
+        aspectRatio: ASPECT_16_9,
         x: 0,
         y: 0,
         w: DEFAULT_W,
@@ -1208,6 +1252,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
       id: uid(),
       x: clamp(droppedItem.x, 0, GRID_COLS),
       y: Math.max(0, droppedItem.y),
+      aspectRatio: source.aspectRatio ?? ASPECT_16_9,
       w: DEFAULT_W,
       h: default169H,
     };
@@ -1236,6 +1281,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
       id: uid(),
       x: 0,
       y: 0,
+      aspectRatio: source.aspectRatio ?? ASPECT_16_9,
       w: DEFAULT_W,
       h: default169H,
     };
@@ -2017,11 +2063,13 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
                 onDrop={onDropFromLibraryToFreeCanvas}
                 onLayoutChange={onLayoutChange}
                 onDragStart={() => {
+                  isInteractingFreeRef.current = true;
                   if (!freeCanvasOpSnapshotRef.current) {
                     freeCanvasOpSnapshotRef.current = captureFree('移动自由画布条目');
                   }
                 }}
                 onDragStop={() => {
+                  isInteractingFreeRef.current = false;
                   const snapshot = freeCanvasOpSnapshotRef.current;
                   freeCanvasOpSnapshotRef.current = null;
                   if (snapshot) {
@@ -2029,11 +2077,30 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
                   }
                 }}
                 onResizeStart={() => {
+                  isInteractingFreeRef.current = true;
                   if (!freeCanvasOpSnapshotRef.current) {
                     freeCanvasOpSnapshotRef.current = captureFree('调整自由画布大小');
                   }
                 }}
-                onResizeStop={() => {
+                onResizeStop={(_layout, _oldItem, newItem) => {
+                  isInteractingFreeRef.current = false;
+                  // Capture the user's aspect ratio after manual resize,
+                  // so future canvas resizes preserve it.
+                  if (freeCanvasWidth > 0) {
+                    const nextAR = aspectFromGrid(freeCanvasWidth, newItem.w, newItem.h);
+                    setWidgets((prev) =>
+                      prev.map((item) =>
+                        item.id !== newItem.i
+                          ? item
+                          : {
+                              ...item,
+                              w: clamp(newItem.w, 4, GRID_COLS),
+                              h: clamp(newItem.h, 4, 30),
+                              aspectRatio: nextAR,
+                            },
+                      ),
+                    );
+                  }
                   const snapshot = freeCanvasOpSnapshotRef.current;
                   freeCanvasOpSnapshotRef.current = null;
                   if (snapshot) {

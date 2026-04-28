@@ -75,16 +75,17 @@ func (EmailVerification) TableName() string {
 }
 
 type Widget struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	InputURL string `json:"inputUrl"`
-	EmbedURL string `json:"embedUrl"`
-	CoverURL string `json:"coverUrl,omitempty"`
-	UpName   string `json:"upName,omitempty"`
-	X        int    `json:"x"`
-	Y        int    `json:"y"`
-	W        int    `json:"w"`
-	H        int    `json:"h"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	InputURL    string   `json:"inputUrl"`
+	EmbedURL    string   `json:"embedUrl"`
+	CoverURL    string   `json:"coverUrl,omitempty"`
+	UpName      string   `json:"upName,omitempty"`
+	AspectRatio *float64 `json:"aspectRatio,omitempty"`
+	X           int      `json:"x"`
+	Y           int      `json:"y"`
+	W           int      `json:"w"`
+	H           int      `json:"h"`
 }
 
 type Layout struct {

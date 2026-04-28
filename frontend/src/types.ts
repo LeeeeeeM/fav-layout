@@ -13,6 +13,8 @@ export type Widget = {
   embedUrl: string;
   coverUrl?: string;
   upName?: string;
+  /** width / height in pixels, captured from the grid at last resize */
+  aspectRatio?: number;
   x: number;
   y: number;
   w: number;
