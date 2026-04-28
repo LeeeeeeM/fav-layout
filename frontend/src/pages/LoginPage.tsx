@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react';
+import { toast } from 'sonner';
 
 type LoginPageProps = {
   loading: boolean;
@@ -8,16 +9,14 @@ type LoginPageProps = {
 export default function LoginPage({ loading, onSubmit }: LoginPageProps) {
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('admin123');
-  const [error, setError] = useState<string>('');
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError('');
-
     try {
       await onSubmit(username, password);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败');
+      const message = err instanceof Error ? err.message : '登录失败';
+      toast.error(message);
     }
   }
 
@@ -45,9 +44,6 @@ export default function LoginPage({ loading, onSubmit }: LoginPageProps) {
           autoComplete="current-password"
           required
         />
-
-        {error ? <div className="error-text">{error}</div> : null}
-
         <button type="submit" disabled={loading}>
           {loading ? '登录中...' : '登录'}
         </button>

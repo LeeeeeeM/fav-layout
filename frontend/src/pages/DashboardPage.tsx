@@ -498,6 +498,12 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
     toast(value);
   };
   const setErrorMessage = (value: string) => toast.error(value);
+  const setAuthErrorMessage = (value: string) => {
+    if (!value) {
+      return;
+    }
+    toast.error(value);
+  };
   const [initialized, setInitialized] = useState(false);
 
   const [hoveredLeafID, setHoveredLeafID] = useState<string | null>(null);
@@ -540,7 +546,6 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
   const [showCaptchaModal, setShowCaptchaModal] = useState(false);
   const [verifyCodePending, setVerifyCodePending] = useState(false);
   const [verifyCooldownSec, setVerifyCooldownSec] = useState(0);
-  const [loginError, setLoginError] = useState('');
   const [loginPending, setLoginPending] = useState(false);
   const loginFirstInputRef = useRef<HTMLInputElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -554,7 +559,6 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
     setVerifyCooldownSec(0);
     setShowCaptchaModal(false);
     setRegisterCaptchaCode('');
-    setLoginError('');
   }
 
   function closeRemoveConfirmModal() {
@@ -1385,12 +1389,11 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
 
   async function handleLoginSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setLoginError('');
     setLoginPending(true);
     try {
       if (authMode === 'register') {
         if (loginPassword !== registerConfirmPassword) {
-          setLoginError('两次输入的密码不一致');
+          setAuthErrorMessage('两次输入的密码不一致');
           return;
         }
         await onRegister(loginUsername, registerEmail, loginPassword, registerVerificationCode);
@@ -1400,7 +1403,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
       closeLoginModal();
       setMessage(authMode === 'register' ? '注册成功，已切换到后端保存' : '登录成功，已切换到后端保存');
     } catch (err) {
-      setLoginError(err instanceof Error ? err.message : authMode === 'register' ? '注册失败' : '登录失败');
+      setAuthErrorMessage(err instanceof Error ? err.message : authMode === 'register' ? '注册失败' : '登录失败');
     } finally {
       setLoginPending(false);
     }
@@ -1408,10 +1411,9 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
 
   async function handleSendRegisterCode() {
     if (!registerEmail.trim()) {
-      setLoginError('请先输入邮箱');
+      setAuthErrorMessage('请先输入邮箱');
       return;
     }
-    setLoginError('');
     try {
       const data = await getCaptcha();
       setRegisterCaptchaID(data.captchaId);
@@ -1419,7 +1421,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
       setRegisterCaptchaCode('');
       setShowCaptchaModal(true);
     } catch (err) {
-      setLoginError(err instanceof Error ? err.message : '获取图形验证码失败');
+      setAuthErrorMessage(err instanceof Error ? err.message : '获取图形验证码失败');
     }
   }
 
@@ -1430,16 +1432,15 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
       setRegisterCaptchaImage(data.imageDataUrl);
       setRegisterCaptchaCode('');
     } catch {
-      setLoginError('获取图形验证码失败');
+      setAuthErrorMessage('获取图形验证码失败');
     }
   }
 
   async function handleVerifyCaptchaAndSendCode() {
     if (!registerCaptchaId || !registerCaptchaCode.trim()) {
-      setLoginError('请输入图形验证码');
+      setAuthErrorMessage('请输入图形验证码');
       return;
     }
-    setLoginError('');
     setVerifyCodePending(true);
     try {
       await sendRegisterVerificationCode({
@@ -1451,7 +1452,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
       setMessage('验证码已发送，请查收邮箱');
       setVerifyCooldownSec(60);
     } catch (err) {
-      setLoginError(err instanceof Error ? err.message : '发送验证码失败');
+      setAuthErrorMessage(err instanceof Error ? err.message : '发送验证码失败');
       void refreshRegisterCaptcha();
     } finally {
       setVerifyCodePending(false);
@@ -1677,7 +1678,6 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
                 </>
               ) : null}
 
-              {loginError ? <div className="error-text">{loginError}</div> : null}
               <Button type="submit" size="sm" disabled={loginPending}>
                 {loginPending ? (authMode === 'register' ? '注册中...' : '登录中...') : authMode === 'register' ? '确认注册' : '确认登录'}
               </Button>
@@ -1687,7 +1687,6 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
                 size="sm"
                 onClick={() => {
                   setAuthMode((m) => (m === 'login' ? 'register' : 'login'));
-                  setLoginError('');
                 }}
               >
                 {authMode === 'register' ? '已有账号，去登录' : '没有账号，去注册'}

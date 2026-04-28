@@ -13,7 +13,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!res.ok) {
-    let message = `Request failed: ${res.status}`;
+    let message = `请求失败（${res.status}）`;
     try {
       const data = (await res.json()) as { error?: string };
       if (data.error) {
@@ -125,7 +125,7 @@ export async function getBilibiliView(params: { bvid?: string; aid?: string }): 
     credentials: 'include',
   });
   if (!res.ok) {
-    let message = `Request failed: ${res.status}`;
+    let message = `请求失败（${res.status}）`;
     try {
       const data = (await res.json()) as { error?: string };
       if (data.error) {
