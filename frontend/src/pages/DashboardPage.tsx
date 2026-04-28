@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react';
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout';
-import { getLayout, getLibraryPage, saveLayout, saveLibrary } from '../api';
+import { getCaptcha, getLayout, getLibraryPage, saveLayout, saveLibrary, sendRegisterVerificationCode } from '../api';
 import type { SplitBranch, SplitDirection, SplitLeaf, SplitNode, User, Widget, WorkspaceMode } from '../types';
 import { dedupeWidgetsById, loadAllLibraryPages, nextVisibleLibrary } from './dashboard/library-paging';
 import { fetchBilibiliMeta, normalizeCoverPic, toBilibiliEmbed } from '../utils/bilibili';
@@ -26,7 +26,9 @@ import { useWorkspaceStore } from '@/stores/workspace-store';
 type DashboardPageProps = {
   user: User | null;
   onLogin: (username: string, password: string) => Promise<void>;
+  onRegister: (username: string, email: string, password: string, verificationCode: string) => Promise<void>;
   onLogout: () => Promise<void>;
+  onOpenProfile: () => void;
 };
 
 type RemoveTarget = {
@@ -472,7 +474,7 @@ function SplitNodeView({
   );
 }
 
-export default function DashboardPage({ user, onLogin, onLogout }: DashboardPageProps) {
+export default function DashboardPage({ user, onLogin, onRegister, onLogout, onOpenProfile }: DashboardPageProps) {
   const mode = useWorkspaceStore((s) => s.mode);
   const setMode = useWorkspaceStore((s) => s.setMode);
   const isDark = useWorkspaceStore((s) => s.isDark);
@@ -525,9 +527,19 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
   const pendingSaveCountRef = useRef(0);
 
   const [showLogin, setShowLogin] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [pendingRemoveTarget, setPendingRemoveTarget] = useState<RemoveTarget | null>(null);
   const [loginUsername, setLoginUsername] = useState('admin');
   const [loginPassword, setLoginPassword] = useState('admin123');
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('');
+  const [registerEmail, setRegisterEmail] = useState('');
+  const [registerVerificationCode, setRegisterVerificationCode] = useState('');
+  const [registerCaptchaId, setRegisterCaptchaID] = useState('');
+  const [registerCaptchaCode, setRegisterCaptchaCode] = useState('');
+  const [registerCaptchaImage, setRegisterCaptchaImage] = useState('');
+  const [showCaptchaModal, setShowCaptchaModal] = useState(false);
+  const [verifyCodePending, setVerifyCodePending] = useState(false);
+  const [verifyCooldownSec, setVerifyCooldownSec] = useState(0);
   const [loginError, setLoginError] = useState('');
   const [loginPending, setLoginPending] = useState(false);
   const loginFirstInputRef = useRef<HTMLInputElement>(null);
@@ -536,7 +548,12 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
 
   function closeLoginModal() {
     setShowLogin(false);
+    setAuthMode('login');
     setLoginPending(false);
+    setVerifyCodePending(false);
+    setVerifyCooldownSec(0);
+    setShowCaptchaModal(false);
+    setRegisterCaptchaCode('');
     setLoginError('');
   }
 
@@ -769,13 +786,11 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
 
   function applyFree(snapshot: FreeHistorySnapshot) {
     setWidgets(snapshot.widgets);
-    setMessage(`已回退：${snapshot.label}`);
     setShowHistory(false);
   }
 
   function applySplit(snapshot: SplitHistorySnapshot) {
     setSplitRoot(snapshot.splitRoot);
-    setMessage(`已回退：${snapshot.label}`);
     setShowHistory(false);
   }
 
@@ -1006,6 +1021,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
       }
       if (showLogin) {
         closeLoginModal();
+        return;
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -1372,15 +1388,89 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     setLoginError('');
     setLoginPending(true);
     try {
-      await onLogin(loginUsername, loginPassword);
+      if (authMode === 'register') {
+        if (loginPassword !== registerConfirmPassword) {
+          setLoginError('两次输入的密码不一致');
+          return;
+        }
+        await onRegister(loginUsername, registerEmail, loginPassword, registerVerificationCode);
+      } else {
+        await onLogin(loginUsername, loginPassword);
+      }
       closeLoginModal();
-      setMessage('登录成功，已切换到后端保存');
+      setMessage(authMode === 'register' ? '注册成功，已切换到后端保存' : '登录成功，已切换到后端保存');
     } catch (err) {
-      setLoginError(err instanceof Error ? err.message : '登录失败');
+      setLoginError(err instanceof Error ? err.message : authMode === 'register' ? '注册失败' : '登录失败');
     } finally {
       setLoginPending(false);
     }
   }
+
+  async function handleSendRegisterCode() {
+    if (!registerEmail.trim()) {
+      setLoginError('请先输入邮箱');
+      return;
+    }
+    setLoginError('');
+    try {
+      const data = await getCaptcha();
+      setRegisterCaptchaID(data.captchaId);
+      setRegisterCaptchaImage(data.imageDataUrl);
+      setRegisterCaptchaCode('');
+      setShowCaptchaModal(true);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : '获取图形验证码失败');
+    }
+  }
+
+  async function refreshRegisterCaptcha() {
+    try {
+      const data = await getCaptcha();
+      setRegisterCaptchaID(data.captchaId);
+      setRegisterCaptchaImage(data.imageDataUrl);
+      setRegisterCaptchaCode('');
+    } catch {
+      setLoginError('获取图形验证码失败');
+    }
+  }
+
+  async function handleVerifyCaptchaAndSendCode() {
+    if (!registerCaptchaId || !registerCaptchaCode.trim()) {
+      setLoginError('请输入图形验证码');
+      return;
+    }
+    setLoginError('');
+    setVerifyCodePending(true);
+    try {
+      await sendRegisterVerificationCode({
+        email: registerEmail.trim(),
+        captchaId: registerCaptchaId,
+        captchaCode: registerCaptchaCode.trim(),
+      });
+      setShowCaptchaModal(false);
+      setMessage('验证码已发送，请查收邮箱');
+      setVerifyCooldownSec(60);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : '发送验证码失败');
+      void refreshRegisterCaptcha();
+    } finally {
+      setVerifyCodePending(false);
+    }
+  }
+
+  useEffect(() => {
+    if (verifyCooldownSec <= 0) {
+      return;
+    }
+    const timer = window.setTimeout(() => setVerifyCooldownSec((s) => (s > 0 ? s - 1 : 0)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [verifyCooldownSec]);
+
+  useEffect(() => {
+    if (showLogin && authMode === 'register') {
+      void refreshRegisterCaptcha();
+    }
+  }, [showLogin, authMode]);
 
   const canAddLibrary = user ? true : library.length < LOCAL_LIBRARY_LIMIT;
   const visibleLibrary = libraryVisible;
@@ -1430,7 +1520,14 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                 aria-haspopup="menu"
                 aria-expanded={userMenuOpen}
               >
-                <span className="user-menu-name">{user.username}</span>
+                <span className="user-menu-avatar" aria-hidden="true">
+                  {user.avatarUrl ? (
+                    <img src={user.avatarUrl} alt="" />
+                  ) : (
+                    <span className="user-menu-avatar-fallback">{(user.nickname || user.username).slice(0, 1).toUpperCase()}</span>
+                  )}
+                </span>
+                <span className="user-menu-name">{user.nickname || user.username}</span>
                 <span className="user-menu-caret" aria-hidden="true">
                   ▾
                 </span>
@@ -1446,7 +1543,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                     role="menuitem"
                     onClick={() => {
                       closeUserMenu();
-                      setMessage('个人资料页：待实现');
+                      onOpenProfile();
                     }}
                   >
                     个人资料
@@ -1509,7 +1606,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="modal-header">
-              <div className="modal-title">登录</div>
+              <div className="modal-title">{authMode === 'register' ? '注册' : '登录'}</div>
               <Button type="button" variant="ghost" size="icon" className="modal-close" onClick={closeLoginModal} aria-label="关闭">
                 <X aria-hidden="true" />
               </Button>
@@ -1523,6 +1620,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                 value={loginUsername}
                 onChange={(e) => setLoginUsername(e.target.value)}
                 autoComplete="username"
+                placeholder="请输入用户名"
                 required
               />
 
@@ -1533,12 +1631,66 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
                 autoComplete="current-password"
+                placeholder={authMode === 'register' ? '至少 6 位' : '请输入密码'}
                 required
               />
+              {authMode === 'register' ? (
+                <>
+                  <label htmlFor="register-email">邮箱</label>
+                  <input
+                    id="register-email"
+                    type="email"
+                    value={registerEmail}
+                    onChange={(e) => setRegisterEmail(e.target.value)}
+                    autoComplete="email"
+                    placeholder="请输入邮箱"
+                    required
+                  />
+                  <label htmlFor="register-verification-code">邮箱验证码</label>
+                  <div className="side-input-row">
+                    <input
+                      id="register-verification-code"
+                      value={registerVerificationCode}
+                      onChange={(e) => setRegisterVerificationCode(e.target.value)}
+                      placeholder="输入6位邮箱验证码"
+                      required
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleSendRegisterCode}
+                      disabled={verifyCodePending || verifyCooldownSec > 0}
+                    >
+                      {verifyCodePending ? '发送中...' : verifyCooldownSec > 0 ? `${verifyCooldownSec}s` : '发送验证码'}
+                    </Button>
+                  </div>
+                  <label htmlFor="register-confirm-password">确认密码</label>
+                  <input
+                    id="register-confirm-password"
+                    type="password"
+                    value={registerConfirmPassword}
+                    onChange={(e) => setRegisterConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                    placeholder="请再次输入密码"
+                    required
+                  />
+                </>
+              ) : null}
 
               {loginError ? <div className="error-text">{loginError}</div> : null}
               <Button type="submit" size="sm" disabled={loginPending}>
-                {loginPending ? '登录中...' : '确认登录'}
+                {loginPending ? (authMode === 'register' ? '注册中...' : '登录中...') : authMode === 'register' ? '确认注册' : '确认登录'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setAuthMode((m) => (m === 'login' ? 'register' : 'login'));
+                  setLoginError('');
+                }}
+              >
+                {authMode === 'register' ? '已有账号，去登录' : '没有账号，去注册'}
               </Button>
             </form>
           </div>
@@ -1586,6 +1738,44 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
                 </Button>
                 <Button type="button" size="sm" onClick={confirmRemoveTarget}>
                   确认删除
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showCaptchaModal ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && setShowCaptchaModal(false)}>
+          <div className="modal" role="dialog" aria-modal="true" aria-label="图形验证码" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">请完成人机验证</div>
+              <Button type="button" variant="ghost" size="icon" className="modal-close" onClick={() => setShowCaptchaModal(false)} aria-label="关闭">
+                <X aria-hidden="true" />
+              </Button>
+            </div>
+            <div className="modal-body">
+              <div className="side-input-row">
+                <input
+                  value={registerCaptchaCode}
+                  onChange={(e) => setRegisterCaptchaCode(e.target.value)}
+                  placeholder="请输入图片中的字符"
+                />
+                {registerCaptchaImage ? (
+                  <img
+                    src={registerCaptchaImage}
+                    alt="图形验证码"
+                    style={{ height: 44, width: 140, borderRadius: 8, border: '1px solid hsl(var(--border))', cursor: 'pointer' }}
+                    onClick={() => void refreshRegisterCaptcha()}
+                  />
+                ) : null}
+              </div>
+              <div className="modal-actions">
+                <Button type="button" variant="outline" size="sm" onClick={() => setShowCaptchaModal(false)}>
+                  取消
+                </Button>
+                <Button type="button" size="sm" onClick={() => void handleVerifyCaptchaAndSendCode()} disabled={verifyCodePending}>
+                  {verifyCodePending ? '验证中...' : '验证并发送'}
                 </Button>
               </div>
             </div>
@@ -1718,7 +1908,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
               </div>
             )}
 
-            {mode === 'free' && initialized && widgets.length === 0 ? <div className="canvas-empty">把右侧条目拖到这里</div> : null}
+            {mode === 'free' && initialized && widgets.length === 0 ? <div className="canvas-empty">把右侧视频拖到这里</div> : null}
             {!initialized ? (
               <div className="canvas-loading" role="status" aria-live="polite" aria-label="正在加载布局">
                 <div className="canvas-loading-spinner" />

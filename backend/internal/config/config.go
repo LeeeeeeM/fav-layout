@@ -10,6 +10,8 @@ type Config struct {
 	SessionMaxAgeSec int
 	SeedUsername     string
 	SeedPassword     string
+	ResendAPIKey     string
+	ResendFromEmail  string
 }
 
 func Load() Config {
@@ -21,6 +23,8 @@ func Load() Config {
 		SessionMaxAgeSec: 60 * 60 * 24 * 7,
 		SeedUsername:     getenv("APP_USER", "admin"),
 		SeedPassword:     getenv("APP_PASSWORD", "admin123"),
+		ResendAPIKey:     getenv("RESEND_API_KEY", ""),
+		ResendFromEmail:  getenv("RESEND_FROM_EMAIL", ""),
 	}
 	return cfg
 }

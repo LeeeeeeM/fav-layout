@@ -5,6 +5,9 @@ import "time"
 type User struct {
 	ID           int64     `json:"id" gorm:"primaryKey;column:id"`
 	Username     string    `json:"username" gorm:"column:username"`
+	Email        string    `json:"email" gorm:"column:email"`
+	Nickname     string    `json:"nickname" gorm:"column:nickname"`
+	AvatarURL    string    `json:"avatarUrl" gorm:"column:avatar_url"`
 	PasswordHash string    `json:"-" gorm:"column:password_hash"`
 	CreatedAt    time.Time `json:"createdAt" gorm:"column:created_at"`
 }
@@ -42,6 +45,33 @@ type StoredLibrary struct {
 
 func (StoredLibrary) TableName() string {
 	return "libraries"
+}
+
+type StoredLibraryItem struct {
+	ID         int64     `gorm:"primaryKey;column:id"`
+	UserID     int64     `gorm:"column:user_id"`
+	Position   int       `gorm:"column:position"`
+	WidgetJSON []byte    `gorm:"column:widget_json;type:jsonb"`
+	CreatedAt  time.Time `gorm:"column:created_at"`
+	UpdatedAt  time.Time `gorm:"column:updated_at"`
+}
+
+func (StoredLibraryItem) TableName() string {
+	return "library_items"
+}
+
+type EmailVerification struct {
+	ID        int64      `gorm:"primaryKey;column:id"`
+	Email     string     `gorm:"column:email"`
+	Purpose   string     `gorm:"column:purpose"`
+	CodeHash  string     `gorm:"column:code_hash"`
+	ExpiresAt time.Time  `gorm:"column:expires_at"`
+	UsedAt    *time.Time `gorm:"column:used_at"`
+	CreatedAt time.Time  `gorm:"column:created_at"`
+}
+
+func (EmailVerification) TableName() string {
+	return "email_verifications"
 }
 
 type Widget struct {

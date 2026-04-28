@@ -36,8 +36,46 @@ export async function login(username: string, password: string): Promise<User> {
   return data.user;
 }
 
+export async function register(params: {
+  username: string;
+  email: string;
+  password: string;
+  nickname: string;
+  verificationCode: string;
+}): Promise<User> {
+  const data = await request<{ user: User }>('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+  return data.user;
+}
+
+export async function sendRegisterVerificationCode(params: { email: string; captchaId: string; captchaCode: string }): Promise<void> {
+  await request<{ ok: boolean }>('/api/auth/email-verification/register', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function getCaptcha(): Promise<{ captchaId: string; imageBase64: string; imageDataUrl: string }> {
+  return request<{ captchaId: string; imageBase64: string; imageDataUrl: string }>('/api/auth/captcha');
+}
+
 export async function me(): Promise<User> {
   const data = await request<{ user: User }>('/api/auth/me');
+  return data.user;
+}
+
+export async function getProfile(): Promise<User> {
+  const data = await request<{ user: User }>('/api/profile');
+  return data.user;
+}
+
+export async function updateProfile(payload: { nickname: string; avatarUrl: string }): Promise<User> {
+  const data = await request<{ user: User }>('/api/profile', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
   return data.user;
 }
 

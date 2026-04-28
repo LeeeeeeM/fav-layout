@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react';
-import { login, logout, me } from './api';
+import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import { login, logout, me, register } from './api';
 import { Toaster } from './components/ui/sonner';
 import DashboardPage from './pages/DashboardPage';
+import ProfilePage from './pages/ProfilePage';
 import { useWorkspaceStore } from './stores/workspace-store';
 import type { User } from './types';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const isDark = useWorkspaceStore((s) => s.isDark);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let canceled = false;
@@ -37,14 +40,46 @@ export default function App() {
     setUser(authUser);
   }
 
+  async function handleRegister(username: string, email: string, password: string, verificationCode: string) {
+    const authUser = await register({ username, email, password, nickname: '', verificationCode });
+    setUser(authUser);
+  }
+
   async function handleLogout() {
     await logout();
     setUser(null);
   }
 
+  function handleProfileUpdated(nextUser: User) {
+    setUser(nextUser);
+  }
+
   return (
     <>
-      <DashboardPage user={user} onLogin={handleLogin} onLogout={handleLogout} />
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <DashboardPage
+              user={user}
+              onLogin={handleLogin}
+              onRegister={handleRegister}
+              onLogout={handleLogout}
+              onOpenProfile={() => navigate('/profile')}
+            />
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            user ? (
+              <ProfilePage user={user} onBack={() => navigate('/')} onProfileUpdated={handleProfileUpdated} />
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
+        />
+      </Routes>
       <Toaster position="top-center" richColors closeButton theme={isDark ? 'dark' : 'light'} />
     </>
   );

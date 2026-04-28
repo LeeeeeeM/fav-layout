@@ -8,6 +8,8 @@ vi.mock('../api', () => ({
   getLibraryPage: vi.fn(),
   saveLayout: vi.fn(),
   saveLibrary: vi.fn(),
+  getCaptcha: vi.fn(),
+  sendRegisterVerificationCode: vi.fn(),
 }));
 
 vi.mock('react-grid-layout', async () => {
@@ -71,7 +73,15 @@ describe('DashboardPage integration', () => {
 
   it('switching mode only persists layout (not library)', async () => {
     const api = await import('../api');
-    const { unmount } = render(<DashboardPage user={{ id: 1, username: 'admin' }} onLogin={vi.fn()} onLogout={vi.fn()} />);
+    const { unmount } = render(
+      <DashboardPage
+        user={{ id: 1, username: 'admin', email: 'admin@example.com', nickname: 'admin', avatarUrl: '' }}
+        onLogin={vi.fn()}
+        onRegister={vi.fn()}
+        onLogout={vi.fn()}
+        onOpenProfile={vi.fn()}
+      />,
+    );
 
     await waitFor(() => {
       expect(api.getLayout).toHaveBeenCalledTimes(1);

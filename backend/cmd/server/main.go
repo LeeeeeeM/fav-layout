@@ -18,9 +18,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	_ = godotenv.Load()
+	_ = godotenv.Load("backend/.env")
 	cfg := config.Load()
 
 	gormDB, err := db.NewDB(cfg.DatabaseURL)
