@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import DashboardPage from './DashboardPage';
 
@@ -10,8 +11,7 @@ vi.mock('../api', () => ({
 }));
 
 vi.mock('react-grid-layout', async () => {
-  const React = await import('react');
-  const MockGrid = (props: React.PropsWithChildren<Record<string, unknown>>) => <div>{props.children}</div>;
+  const MockGrid = (props: { children?: ReactNode }) => <div>{props.children}</div>;
   return {
     __esModule: true,
     default: MockGrid,
@@ -27,8 +27,9 @@ vi.mock('sonner', () => ({
 }));
 
 describe('DashboardPage integration', () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
   beforeEach(async () => {
-    vi.useFakeTimers();
     const api = await import('../api');
     vi.mocked(api.getLayout).mockResolvedValue({
       items: [],
@@ -65,27 +66,36 @@ describe('DashboardPage integration', () => {
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
   it('switching mode only persists layout (not library)', async () => {
     const api = await import('../api');
-    render(<DashboardPage user={{ id: 1, username: 'admin' }} onLogin={vi.fn()} onLogout={vi.fn()} />);
+    const { unmount } = render(<DashboardPage user={{ id: 1, username: 'admin' }} onLogin={vi.fn()} onLogout={vi.fn()} />);
 
     await waitFor(() => {
       expect(api.getLayout).toHaveBeenCalledTimes(1);
     });
 
-    vi.runAllTimers();
+    await act(async () => {
+      await sleep(700);
+    });
     vi.clearAllMocks();
 
-    fireEvent.click(screen.getByRole('radio', { name: '分屏模式' }));
-    vi.advanceTimersByTime(700);
+    fireEvent.click(screen.getByText('分屏模式'));
 
-    await waitFor(() => {
-      expect(api.saveLayout).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await sleep(700);
     });
+
+    await waitFor(
+      () => {
+        expect(api.saveLayout).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 2500 },
+    );
     expect(api.saveLibrary).not.toHaveBeenCalled();
+
+    unmount();
   });
 });

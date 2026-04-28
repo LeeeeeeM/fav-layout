@@ -1390,7 +1390,7 @@ export default function DashboardPage({ user, onLogin, onLogout }: DashboardPage
     <div className="dashboard-page" ref={dashboardPageRef}>
       <header className="top-bar" ref={topBarRef}>
         <div>
-          <h2>自定义视频布局</h2>
+          <h2>视频玩家</h2>
         </div>
 
         <div className="auth-actions">

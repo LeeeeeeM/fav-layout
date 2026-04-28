@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "typecheck:frontend": "npm --prefix frontend exec -- tsc --noEmit -p frontend/tsconfig.json"
+  },
   "devDependencies": {
     "shadcn": "^4.5.0"
   }
