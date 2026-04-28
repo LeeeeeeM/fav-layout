@@ -17,7 +17,6 @@ import (
 	"fav-layout/backend/migrations"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 )
 
@@ -35,10 +34,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := db.EnsureSeedUser(gormDB, cfg.SeedUsername, cfg.SeedPassword); err != nil {
-		log.Fatal(err)
-	}
-
 	repo := repository.New(gormDB)
 	if err := repo.CleanupExpiredSessions(context.Background()); err != nil {
 		log.Printf("cleanup sessions warning: %v", err)
@@ -48,14 +43,6 @@ func main() {
 	auth := middleware.NewAuth(repo, cfg.SessionCookie)
 
 	r := chi.NewRouter()
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{cfg.FrontendOrigin},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}))
-
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux, auth)
 	r.Mount("/", mux)
