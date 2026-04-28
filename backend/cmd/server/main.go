@@ -14,7 +14,6 @@ import (
 	"fav-layout/backend/internal/handlers"
 	"fav-layout/backend/internal/middleware"
 	"fav-layout/backend/internal/repository"
-	"fav-layout/backend/migrations"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/joho/godotenv"
@@ -27,10 +26,6 @@ func main() {
 
 	gormDB, err := db.NewDB(cfg.DatabaseURL)
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err := migrations.Apply(gormDB); err != nil {
 		log.Fatal(err)
 	}
 

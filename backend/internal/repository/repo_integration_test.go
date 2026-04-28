@@ -4,13 +4,31 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"fav-layout/backend/internal/db"
 	"fav-layout/backend/internal/models"
-	"fav-layout/backend/migrations"
 )
+
+func applyTestMigrations(t *testing.T, databaseURL string) {
+	t.Helper()
+
+	gormDB, err := db.NewDB(databaseURL)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	migrationPath := filepath.Join("..", "..", "migration", "000001_baseline.up.sql")
+	sqlBytes, err := os.ReadFile(migrationPath)
+	if err != nil {
+		t.Fatalf("read migration file: %v", err)
+	}
+	if err := gormDB.Exec(string(sqlBytes)).Error; err != nil {
+		t.Fatalf("apply test migration: %v", err)
+	}
+}
 
 func TestRepositoryLibraryPagingIntegration(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
@@ -22,9 +40,7 @@ func TestRepositoryLibraryPagingIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := migrations.Apply(gormDB); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
+	applyTestMigrations(t, databaseURL)
 
 	ctx := context.Background()
 	repo := New(gormDB)
@@ -109,9 +125,7 @@ func TestRepositoryLibraryPagingEmptyIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := migrations.Apply(gormDB); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
+	applyTestMigrations(t, databaseURL)
 
 	ctx := context.Background()
 	repo := New(gormDB)

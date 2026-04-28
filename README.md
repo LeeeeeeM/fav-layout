@@ -4,7 +4,7 @@ Go + React + TypeScript 的摸鱼布局小工具（后端：Go + GORM + PostgreS
 
 ## 功能
 
-- 基础登录验证（默认账号：`admin / admin123`）
+- 基础登录验证（注册后登录）
 - 输入 B 站视频链接，回车快速添加 iframe 视频窗口
 - 拖拽 + 缩放视频窗口
 - 自动保存布局到后端，下次登录自动恢复
@@ -30,10 +30,21 @@ docker compose up -d postgres
 ```bash
 cd /Users/sunliangmu/fav-layout/backend
 cp .env.example .env # 可选
+go run ./cmd/migrate up
 go run ./cmd/server
 ```
 
 默认监听 `http://localhost:8383`。
+
+迁移命令（`golang-migrate`）：
+
+```bash
+cd /Users/sunliangmu/fav-layout/backend
+go run ./cmd/migrate up
+go run ./cmd/migrate down 1
+go run ./cmd/migrate version
+go run ./cmd/migrate force <version>
+```
 
 也可以用 air 热更新：
 

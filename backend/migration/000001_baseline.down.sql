@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS email_verifications;
+DROP TABLE IF EXISTS library_items;
+DROP TABLE IF EXISTS libraries;
+DROP TABLE IF EXISTS layouts;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS users;
