@@ -7,7 +7,7 @@ export PORT
 /app/server &
 SERVER_PID=$!
 
-nginx -g 'daemon off;' &
+openresty -g 'daemon off;' &
 NGINX_PID=$!
 
 term_handler() {
