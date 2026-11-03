@@ -216,8 +216,13 @@ func (h *Handler) bilibiliView(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, "failed to build request")
 		return
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; fav-layout/1.0; +local-dev)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	req.Header.Set("Referer", "https://www.bilibili.com/")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Origin", "https://www.bilibili.com")
+	if cookie := bilibiliClientCookie(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -233,8 +238,9 @@ func (h *Handler) bilibiliView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var wrapper struct {
-		Code int `json:"code"`
-		Data *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    *struct {
 			Title string `json:"title"`
 			Pic   string `json:"pic"`
 			Owner *struct {
@@ -242,12 +248,20 @@ func (h *Handler) bilibiliView(w http.ResponseWriter, r *http.Request) {
 			} `json:"owner"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &wrapper); err != nil || wrapper.Data == nil {
+	if err := json.Unmarshal(body, &wrapper); err != nil {
 		jsonError(w, http.StatusBadGateway, "invalid upstream response")
 		return
 	}
 	if wrapper.Code != 0 {
-		jsonError(w, http.StatusBadGateway, "bilibili API returned an error")
+		message := strings.TrimSpace(wrapper.Message)
+		if message == "" {
+			message = "bilibili API returned an error"
+		}
+		jsonError(w, http.StatusBadGateway, message)
+		return
+	}
+	if wrapper.Data == nil {
+		jsonError(w, http.StatusBadGateway, "invalid upstream response")
 		return
 	}
 
@@ -262,6 +276,19 @@ func (h *Handler) bilibiliView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, out)
+}
+
+// bilibiliClientCookie 生成 B 站网页端会在首页下发的访客 Cookie。
+// 不带 buvid3 时，api.bilibili.com 会对机房 IP 返回 412。
+func bilibiliClientCookie() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return ""
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	buvid3 := fmt.Sprintf("%X-%X-%X-%X-%Xinfoc", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+	return "buvid3=" + buvid3 + "; b_nut=" + strconv.FormatInt(time.Now().Unix(), 10)
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {

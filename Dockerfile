@@ -1,11 +1,12 @@
-FROM node:24-alpine AS frontend-builder
+FROM node:24.22.2-alpine AS frontend-builder
 
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM golang:1.24-alpine AS backend-builder
+FROM golang:1.27.3-alpine AS backend-builder
 
 ARG TARGETOS
 ARG TARGETARCH

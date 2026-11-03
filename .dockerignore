@@ -1,0 +1,8 @@
+.git
+.agents
+**/.DS_Store
+**/node_modules
+frontend/dist
+backend/tmp
+backend/bin
+backend/data
