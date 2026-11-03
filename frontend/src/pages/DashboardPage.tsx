@@ -34,6 +34,7 @@ import { useWorkspaceStore } from '@/stores/workspace-store';
 
 type DashboardPageProps = {
   user: User | null;
+  authReady: boolean;
   onLogin: (username: string, password: string) => Promise<void>;
   onRegister: (username: string, email: string, password: string, verificationCode: string) => Promise<void>;
   onLogout: () => Promise<void>;
@@ -499,7 +500,7 @@ function SplitNodeView({
   );
 }
 
-export default function DashboardPage({ user, onLogin, onRegister, onLogout, onOpenProfile }: DashboardPageProps) {
+export default function DashboardPage({ user, authReady, onLogin, onRegister, onLogout, onOpenProfile }: DashboardPageProps) {
   const mode = useWorkspaceStore((s) => s.mode);
   const setMode = useWorkspaceStore((s) => s.setMode);
   const isDark = useWorkspaceStore((s) => s.isDark);
@@ -692,6 +693,11 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
     let canceled = false;
 
     async function bootstrap() {
+      if (!authReady) {
+        setInitialized(false);
+        return;
+      }
+
       setInitialized(false);
 
       if (!user) {
@@ -707,6 +713,11 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
         }
         return;
       }
+
+      setWidgets([]);
+      setLibrary([]);
+      setLibraryVisible([]);
+      setLibraryHasMore(false);
 
       try {
         const data = await getLayout();
@@ -738,7 +749,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
     return () => {
       canceled = true;
     };
-  }, [user]);
+  }, [user, authReady]);
 
   useEffect(() => {
     if (user) {
@@ -1598,7 +1609,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
     }
   }
 
-  const canAddLibrary = user ? true : library.length < LOCAL_LIBRARY_LIMIT;
+  const canAddLibrary = initialized && (user ? true : library.length < LOCAL_LIBRARY_LIMIT);
   const visibleLibrary = libraryVisible;
   const saveStatusText = saveStatus === 'saved' ? '已保存' : saveStatus === 'error' ? '保存失败' : '';
 
@@ -2177,7 +2188,7 @@ export default function DashboardPage({ user, onLogin, onRegister, onLogout, onO
 
           <div className="library-list" ref={libraryListRef} onScroll={handleLibraryListScroll}>
             {visibleLibrary.length === 0 ? (
-              <div className="library-empty">暂无视频，先添加链接</div>
+              <div className="library-empty">{initialized ? '暂无视频，先添加链接' : '正在加载视频库...'}</div>
             ) : (
               visibleLibrary.map((item) => (
                 <div

@@ -76,6 +76,7 @@ describe('DashboardPage integration', () => {
     const { unmount } = render(
       <DashboardPage
         user={{ id: 1, username: 'admin', email: 'admin@example.com', nickname: 'admin', avatarUrl: '' }}
+        authReady
         onLogin={vi.fn()}
         onRegister={vi.fn()}
         onLogout={vi.fn()}
@@ -107,5 +108,87 @@ describe('DashboardPage integration', () => {
     expect(api.saveLibrary).not.toHaveBeenCalled();
 
     unmount();
+  });
+
+  it('does not show localStorage videos before auth is ready or after login', async () => {
+    const api = await import('../api');
+    window.localStorage.setItem(
+      'fav-layout.workspace',
+      JSON.stringify({
+        items: [
+          {
+            id: 'local-a',
+            title: '本地视频A',
+            inputUrl: 'https://www.bilibili.com/video/BV1ZuKc62E8t',
+            embedUrl: 'https://player.bilibili.com/player.html?bvid=BV1ZuKc62E8t',
+            x: 0,
+            y: 0,
+            w: 8,
+            h: 6,
+          },
+          {
+            id: 'local-b',
+            title: '本地视频B',
+            inputUrl: 'https://www.bilibili.com/video/BV1ZuKc62E8t',
+            embedUrl: 'https://player.bilibili.com/player.html?bvid=BV1ZuKc62E8t',
+            x: 8,
+            y: 0,
+            w: 8,
+            h: 6,
+          },
+        ],
+        library: [],
+        mode: 'free',
+      }),
+    );
+    vi.mocked(api.getLayout).mockResolvedValue({
+      items: [
+        {
+          id: 'remote-1',
+          title: '账号视频',
+          inputUrl: 'https://www.bilibili.com/video/BV1G2Hy6KENA',
+          embedUrl: 'https://player.bilibili.com/player.html?bvid=BV1G2Hy6KENA',
+          x: 6,
+          y: 0,
+          w: 8,
+          h: 5,
+        },
+      ],
+      mode: 'free',
+      splitRoot: { kind: 'leaf', id: 'root' },
+    });
+
+    const { rerender } = render(
+      <DashboardPage
+        user={null}
+        authReady={false}
+        onLogin={vi.fn()}
+        onRegister={vi.fn()}
+        onLogout={vi.fn()}
+        onOpenProfile={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('正在加载布局...')).toBeTruthy();
+    expect(screen.queryByText('本地视频A')).toBeNull();
+    expect(screen.queryByText('本地视频B')).toBeNull();
+    expect(api.getLayout).not.toHaveBeenCalled();
+
+    rerender(
+      <DashboardPage
+        user={{ id: 1, username: 'admin', email: 'admin@example.com', nickname: 'admin', avatarUrl: '' }}
+        authReady
+        onLogin={vi.fn()}
+        onRegister={vi.fn()}
+        onLogout={vi.fn()}
+        onOpenProfile={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('账号视频')).toBeTruthy();
+    });
+    expect(screen.queryByText('本地视频A')).toBeNull();
+    expect(screen.queryByText('本地视频B')).toBeNull();
   });
 });

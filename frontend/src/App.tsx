@@ -67,6 +67,7 @@ export default function App() {
           element={
             <DashboardPage
               user={user}
+              authReady={authReady}
               onLogin={handleLogin}
               onRegister={handleRegister}
               onLogout={handleLogout}
